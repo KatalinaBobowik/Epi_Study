@@ -1,0 +1,12 @@
+# Folder created on 17.01.19 by Katalina Bobowik.
+
+This folder contains scripts for analysing what pathogens are present in the Indonesian RNA seq data. All raw RNA seq reads can be found on Spartan within the folder: /data/cephfs/punim0586/shared/raw_data.
+
+
+Files:
+
+1) unmappedReads_DiamondMetagenomicClassification.sh: extracting unmapped reads from STAR bam files and running the metagenomic classifier Diamond. To run Diamond, all scripts were run via an array script (/data/cephfs/punim0586/kbobowik/Diamond/diamond_array_script.txt) using sbatch. The sbatch shell script can be found here: /data/cephfs/punim0586/kbobowik/EpidemiologicalSurvey/scripts/shell_scripts/Diamond_metagenomicAlignment.sh.
+
+Programs used:
+diamond version 0.9.10
+samtools 1.9

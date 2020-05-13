@@ -1,0 +1,19 @@
+##  A downloading script
+
+
+## these samples will be downloaded
+
+samples = ['SRR6033216','SRR6033217']
+
+rule all:
+    input: expand("output/{sample}.sra",sample = samples)
+
+rule download:
+    output: "output{sample}.sra"
+    params:
+        url = "https://sra-downloadb.be-md.ncbi.nlm.nih.gov/sos2/sra-pub-run-11/"
+    shell:
+        """
+        wget '{params.url}/{wildcards.sample}' -o {output}
+
+        """

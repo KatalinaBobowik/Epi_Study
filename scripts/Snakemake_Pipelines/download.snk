@@ -1,0 +1,21 @@
+##  A downloading script
+
+
+## these samples will be downloaded
+
+samples = ['SRR8367774']
+
+rule all:
+    input: expand("output/{sample}.fastq.gz",sample = samples)
+
+rule download:
+    output: "output{sample}.fastq.gz"
+    params:
+        url = "ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR836/004/SRR8367774/"
+    shell:
+        """
+        wget '{params.url}/{wildcards.sample}' -o {output}
+
+        """
+ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR836/004/SRR8367774/SRR8367774.fastq.gz
+ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR836/004/SRR8367774/SRR8367774_1.fastq.gz
