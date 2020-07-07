@@ -1,9 +1,8 @@
 # 02/03/2020
 
-conda init <SHELL_NAME>
-
 # Run conda session (if running sinteractive session)
-source activate py37
+eval "$(conda shell.bash hook)"
+conda activate py37
 
 # directories
 Control50BP=/data/cephfs/punim0586/kbobowik/EpidemiologicalSurvey/controlSamples_SnakemakeWorkflow/output/50BPControlSamplesCCMetagen_TE
@@ -28,7 +27,7 @@ for folder in ${folders[@]}; do
 		grep -iv Ribosomal $sample | grep -iv rRNA > ${folder}/${ID}_noRNA.csv
 	done
 	# remove orginal .csv files
-	cd $folder | ls | grep '.csv$' | grep -v 'noRNA.csv$' | xargs -r rm
+	find $folder -name '*.csv' -and -not -name '*noRNA.csv' -type f -exec rm '{}' \;
 	# Produce summary table
 	CCMetagen_merge.py --input_fp ${folder}/ --keep_or_remove r --filtering_tax_level Phylum --taxa_list Chordata,Arthropoda --output_fp ${folder}/ControlUnmapped_species_table_noRepeats_noRNA_RPM
 done
