@@ -1,5 +1,7 @@
 # 02/03/2020
 
+conda init <SHELL_NAME>
+
 # Run conda session (if running sinteractive session)
 source activate py37
 
@@ -26,7 +28,7 @@ for folder in ${folders[@]}; do
 		grep -iv Ribosomal $sample | grep -iv rRNA > ${folder}/${ID}_noRNA.csv
 	done
 	# remove orginal .csv files
-	cd $folder | ls | grep '.csv$' | grep -v 'noRNA.csv$' | xargs rm
+	cd $folder | ls | grep '.csv$' | grep -v 'noRNA.csv$' | xargs -r rm
 	# Produce summary table
 	CCMetagen_merge.py --input_fp ${folder}/ --keep_or_remove r --filtering_tax_level Phylum --taxa_list Chordata,Arthropoda --output_fp ${folder}/ControlUnmapped_species_table_noRepeats_noRNA_RPM
 done
