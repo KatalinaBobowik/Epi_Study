@@ -19,7 +19,7 @@ outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba
 
 # Import data and convert to a phyloseq object
 # raw_CCMetagen_data <- read.csv(paste0(inputdir,"IndoUnmapped_species_table_Helminths.csv"),check.names=FALSE)
-raw_CCMetagen_data <- read.csv(paste0(inputdir,"IndoUnmapped_species_table_Helminths_RPM.csv"),check.names=FALSE)
+raw_CCMetagen_data <- read.csv(paste0(inputdir,"IndoUnmapped_species_table_noRepeats_RPM.csv"),check.names=FALSE)
 
 # remove plants form the analysis
 raw_CCMetagen_data=raw_CCMetagen_data[-which(raw_CCMetagen_data$Kingdom=="Viridiplantae"),]
@@ -65,7 +65,7 @@ ggplot(df, aes(x=island, y=value, fill=Var1)) + geom_bar(width = 1, stat = "iden
 dev.off()
 
 # the strong Plasmo signal is driven by one sample, SMB-PTB-028. Let's take him out
-taxa_noSMB.PTB028=taxa[,-which(colnames(taxa) %in% "SMB.PTB028")]
+taxa_noSMB.PTB028=taxa[,-which(colnames(taxa) %in% "SMB.PTB028_noRNA")]
 df=melt(taxa_noSMB.PTB028)
 df$island=NA
 df$island[grep("MPI",df$Var2)]="MPI"
@@ -119,9 +119,8 @@ colnames(scaledOTUs) = colnames(otu_table(TopFamilies))
 rownames(scaledOTUs) = rownames(otu_table(TopFamilies))
 write.table(scaledOTUs, file=paste0(outputdir,"scaledOTUs.txt"))
 
-# without Plasmodium or Mermithidae
+# without Plasmodium
 taxa=taxa[-which(rownames(taxa) %in% "Eukaryota_Plasmodiidae"),]
-taxa=taxa[-which(rownames(taxa) %in% "Eukaryota_Mermithidae"),]
 
 CCMeta_physeq = phyloseq(taxa, tax)
 plot_bar(CCMeta_physeq, fill = "Superkingdom")
