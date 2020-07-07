@@ -91,7 +91,6 @@ rule star_pe_firstmap:
 	log:
 		"logs/star/{sample}.log"
 	shell:
-		# unfortunately I have no better way of doing it- define sample name then use that as dirname
 		"module load web_proxy; module load STAR; x=`basename {input.f1} _1.fastq.gz`; STAR --genomeDir {input.dir} "
 		"--readFilesIn {input.f1} {input.f2} "
 		"--runThreadN 12 --sjdbOverhang 49 "
