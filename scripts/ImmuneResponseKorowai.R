@@ -38,15 +38,18 @@ outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba
 
 # load expression data and OTU file
 load(paste0(inputdir, "indoRNA.read_counts.TMM.filtered.Rda"))
-OTUs=read.table(paste0(refDir,"allOTUs.txt"))
+OTUs=read.table(paste0(refDir,"scaledOTUs.txt"))
 
 # transform OTU file to make it the same configuration as the other variables, then make sure sample names are 
 # the same before appending to DGE list
 OTUs=t(OTUs)
+OTUs[is.na(OTUs)] <- 0
 samplenamesOTU <- as.character(rownames(OTUs))
 samplenamesOTU <- gsub("\\.","-", samplenamesOTU)
+samplenamesOTU <- gsub("Batch1","", samplenamesOTU)
 samplenamesOTU <- gsub("Batch3","", samplenamesOTU)
 samplenamesOTU <- gsub("Batch2","", samplenamesOTU)
+samplenamesOTU <- gsub("_lowAccessionRemoval","", samplenamesOTU)
 samplenamesOriginal <- as.character(rownames(y$samples))
 samplenamesOriginal <- sapply(strsplit(samplenamesOriginal, "[_.]"), `[`, 1)
 
@@ -118,6 +121,7 @@ dev.off()
 
 # Co-inertia analysis between Mappi samples gene expression levels and pathogen load -------------------
 
+# these are all DE genes at no log fold change threshold and an adjusted p-value of 0.05
 SMBvsMTW=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_SMBvsMTW.txt")
 SMBvsMTW=rownames(SMBvsMTW)[which(abs(SMBvsMTW$logFC) >= 1)]
 SMBvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_SMBvsMPI.txt")
@@ -125,7 +129,7 @@ SMBvsMPI=rownames(SMBvsMPI)[which(abs(SMBvsMPI$logFC) >= 1)]
 MTWvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_MTWvsMPI.txt")
 MTWvsMPI=rownames(MTWvsMPI)[which(abs(MTWvsMPI$logFC) >= 1)]
 
-#centered and reduced to one unit of variance prior performing the PCA analysis.
+#center and reduce to one unit of variance prior performing the PCA analysis.
 indoSampleSet <- t(apply(batch.corrected.lcpm,1,scale,scale=F))
 y$samples$Age[which(is.na(y$samples$Age) == T)]=45
 
