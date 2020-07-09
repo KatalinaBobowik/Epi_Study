@@ -1,4 +1,4 @@
-# 02/03/2020
+#!/bin/bash
 
 # Run conda session (if running sinteractive session)
 eval "$(conda shell.bash hook)"
