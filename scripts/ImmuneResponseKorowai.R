@@ -328,7 +328,7 @@ ggplot(meltedGenes, aes(x = island, y = value, fill = type)) +
 # are differently distributed on the components in terms of contribution value 
 # If you would like to plot densities rather than boxplots, use'typePlot=density'
 OTUQual=c()
-for (sample in colnames(OTUs2)){
+for (sample in colnames(OTUs)){
   if(length(levels(y$samples[,sample])) > 1){
     OTUQual=c(OTUQual,sample)
   }
@@ -407,7 +407,7 @@ clus2var
 ##
 ## Run the analysis of the ICA decomposition
 # runAn(params=params, icaSet=icaSetIndo, writeGenesByComp = TRUE,keepVar=keepVar, dbGOstats = "KEGG")
-keepVar <- c("Island",colnames(OTUs2)[14])
+keepVar <- c("Island",colnames(OTUs))
 
 #  Plot heatmaps of the contributing elements
 resH <- plot_heatmapsOnSel(icaSet = icaSetIndo, selCutoff = 3, level = "genes", keepVar = keepVar,doSamplesDendro = TRUE, doGenesDendro = TRUE, heatmapCol = maPalette(low = "blue", high = "red", mid = "yellow", k=44),file = "heatmapWithDendro", annot2col=annot2col(params))

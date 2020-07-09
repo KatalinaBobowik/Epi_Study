@@ -24,6 +24,9 @@ library(JADE)
 library(edgeR)
 library(limma)
 library(MineICA)
+library(biomaRt)
+library(ComplexHeatmap)
+library(circlize)
 
 # Set paths:
 inputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/dataPreprocessing/"
@@ -39,10 +42,14 @@ OTUs=read.table(paste0(refDir,"scaledOTUs.txt"))
 # transform OTU file to make it the same configuration as the other variables, then make sure sample names are 
 # the same before appending to DGE list
 OTUs=t(OTUs)
+# replace any NA values with zero
+OTUs[is.na(OTUs)] <- 0
 samplenamesOTU <- as.character(rownames(OTUs))
 samplenamesOTU <- gsub("\\.","-", samplenamesOTU)
+samplenamesOTU <- gsub("Batch1","", samplenamesOTU)
 samplenamesOTU <- gsub("Batch3","", samplenamesOTU)
 samplenamesOTU <- gsub("Batch2","", samplenamesOTU)
+samplenamesOTU <- gsub("_lowAccessionRemoval","", samplenamesOTU)
 samplenamesOriginal <- as.character(rownames(y$samples))
 samplenamesOriginal <- sapply(strsplit(samplenamesOriginal, "[_.]"), `[`, 1)
 
