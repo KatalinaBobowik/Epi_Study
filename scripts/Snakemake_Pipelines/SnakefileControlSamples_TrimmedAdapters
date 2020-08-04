@@ -1,0 +1,184 @@
+configfile: "config.yaml"
+
+rule all:
+	input:
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/qc/fastqc/{sample}_1_fastqc.html", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/qc/fastqc/{sample}_2_fastqc.html", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/qc/fastqc/{sample}_1_fastqc.zip", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/qc/fastqc/{sample}_2_fastqc.zip", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_Trimmed/{sample}_1.fastq.gz", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_Trimmed/{sample}_2.fastq.gz", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_Trimmed/{sample}_1.unpaired.fastq.gz", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_Trimmed/{sample}_2.unpaired.fastq.gz", sample=config["samples"]),
+		directory("/data/scratch/projects/punim0586/kat/50BPIndonesianGenome"),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_MappedTwoPass/{sample}_Aligned.sortedByCoord.out.bam", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_MappedTwoPass/{sample}_Unmapped.out.mate1", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_MappedTwoPass/{sample}_Unmapped.out.mate1", sample=config["samples"]),
+		directory("/data/scratch/projects/punim0586/kat/50BPIndo_genome_TE_ensembl"),
+		expand("/data/scratch/projects/punim0586/kat/50BPControlSamplesMappedTE/{sample}_Aligned.sortedByCoord.out.bam", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/50BPControlSamplesMappedTE/{sample}_Unmapped.out.mate1", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/50BPControlSamplesMappedTE/{sample}_Unmapped.out.mate2", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/50BPControlSamplesKMA_TE/{sample}.res", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/50BPControlSamplesKMA_TE/{sample}.mapstat", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/50BPControlSamplesCCMetagen_TE/{sample}.csv", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/50BPControlSamplesCCMetagen_TE/{sample}.html", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/50BPControlSamplesCCMetagen_TE/{sample}.tsv", sample=config["samples"])
+
+rule trimmomatic_pe:
+	input:
+		r1="/data/scratch/projects/punim0586/kat/data/Bipolar_controlSamples_EpiStudy/{sample}/{sample}_1.fastq.gz",
+		r2="/data/scratch/projects/punim0586/kat/data/Bipolar_controlSamples_EpiStudy/{sample}/{sample}_2.fastq.gz"
+	output:
+		r1="/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_Trimmed/{sample}_1.fastq.gz",
+		r2="/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_Trimmed/{sample}_2.fastq.gz",
+		# reads where trimming entirely removed the mate
+		r1_unpaired="/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_Trimmed/{sample}_1.unpaired.fastq.gz",
+		r2_unpaired="/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_Trimmed/{sample}_2.unpaired.fastq.gz"
+	log:
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/logs/trimmomatic/{sample}.log"
+	shell:
+		"module load web_proxy; module load java; java -jar /data/cephfs/punim0586/kbobowik/bin/Trimmomatic-0.36/trimmomatic-0.36.jar PE " 
+		"-threads 12 -phred33 {input.r1} {input.r2} {output.r1} "
+		"{output.r1_unpaired} {output.r2} {output.r2_unpaired} LEADING:20 TRAILING:20 MINLEN:45 ILLUMINACLIP:/data/cephfs/punim0586/kbobowik/bin/Trimmomatic-0.36/adapters/TruSeq3-PE.fa:2:30:10:2:keepBothReads -trimlog {log}"
+
+rule fastqc:
+	input:
+		["/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/{sample}/{sample}_1.fastq.gz", "/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/{sample}/{sample}_2.fastq.gz"]
+	output:
+        "/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/qc/fastqc/{sample}_1_fastqc.html",
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/qc/fastqc/{sample}_2_fastqc.html",
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/qc/fastqc/{sample}_1_fastqc.zip",
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/qc/fastqc/{sample}_2_fastqc.zip"
+	conda:
+		"envs/QC.yaml"
+	log:
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/logs/fastqc/{sample}.log"
+	shell:
+        	"module load web_proxy; fastqc {input} -t 12 --extract --outdir=/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/qc/fastqc/ &> {log}"
+
+rule star_index:
+	input:
+		fasta="/data/cephfs/punim0586/shared/genomes/hg38/Homo_sapiens.GRCh38.p10.ensemblv90.dna.primary_assembly.fa",
+		gtf="/data/cephfs/punim0586/shared/genomes/hg38/GTF_annotation/Homo_sapiens.GRCh38.90.gtf"
+	output:
+		directory("/data/scratch/projects/punim0586/kat/50BPIndonesianGenome")
+	log:
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/logs/star_index/genome.log"
+	threads: 12
+	shell:
+		"module load web_proxy; module load gcc/8.3.0; module load star/2.7.3a; mkdir /data/scratch/projects/punim0586/kat/50BPIndonesianGenome; STAR --runMode genomeGenerate "
+		"--genomeDir /data/scratch/projects/punim0586/kat/50BPIndonesianGenome "
+		"--genomeFastaFiles {input.fasta} "
+		"--sjdbGTFfile {input.gtf} "
+		"--sjdbOverhang 49 "
+		"--runThreadN {threads} &> {log}"
+
+rule star_pe_twopassmode:
+	input:
+		f1="/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/{sample}/{sample}_1.fastq.gz",
+		f2="/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/{sample}/{sample}_2.fastq.gz",
+		dir=directory("/data/scratch/projects/punim0586/kat/50BPIndonesianGenome"),
+		gtf="/data/cephfs/punim0586/shared/genomes/hg38/GTF_annotation/Homo_sapiens.GRCh38.90.gtf"
+	output:
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_MappedTwoPass/{sample}_Aligned.sortedByCoord.out.bam",
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_MappedTwoPass/{sample}_Unmapped.out.mate1",
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_MappedTwoPass/{sample}_Unmapped.out.mate2"
+	log:
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/logs/star/{sample}.log"
+	shell:
+		# unfortunately I have no better way of doing it- define sample name then use that as dirname
+		"module load web_proxy; module load gcc/8.3.0; module load star/2.7.3a; x=`basename {input.f1} _1.fastq.gz`; STAR --genomeDir {input.dir} "
+		"--readFilesIn {input.f1} {input.f2} "
+		"--runThreadN 12 --sjdbOverhang 49 "
+		"--readFilesCommand zcat "
+		"--outFileNamePrefix /data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_MappedTwoPass/${{x}}_ "
+		"--outSAMunmapped Within "
+		"--outReadsUnmapped Fastx "
+		"--twopassMode Basic "
+		"--sjdbGTFfile {input.gtf} "
+		"--outSAMtype BAM SortedByCoordinate &> {log}"
+
+rule star_TEindex:
+	input:
+		fasta="/data/cephfs/punim0586/kbobowik/genome/TEGenome.fa",
+		gtf="/data/cephfs/punim0586/kbobowik/genome/GRCh38_Ensembl_rmsk_TE.gtf"
+	output:
+		directory("/data/scratch/projects/punim0586/kat/50BPIndo_genome_TE_ensembl")
+	log:
+		"/data/scratch/projects/punim0586/kat/50BPIndonesianSamples/logs/star_TEindex/genome.log"
+	threads: 12
+	shell:
+		"module load web_proxy; module load gcc/8.3.0; module load star/2.7.3a; mkdir /data/scratch/projects/punim0586/kat/50BPIndo_genome_TE_ensembl; STAR --runMode genomeGenerate "
+		"--genomeDir /data/scratch/projects/punim0586/kat/50BPIndo_genome_TE_ensembl "
+		"--genomeFastaFiles {input.fasta} "
+		"--sjdbGTFfile {input.gtf} "
+		"--sjdbOverhang 49 "
+		"--runThreadN {threads} "
+		# this parameter is necessary so that an error doesn't occur about memory usage
+		"--genomeChrBinNbits 9 &> {log}"
+
+rule star_pe_twopassmodeTE:
+	input:
+		f1="/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_MappedTwoPass/{sample}_Unmapped.out.mate1",
+		f2="/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy_MappedTwoPass/{sample}_Unmapped.out.mate1",
+		dir=directory("/data/scratch/projects/punim0586/kat/50BPIndo_genome_TE_ensembl"),
+		gtf="/data/cephfs/punim0586/kbobowik/genome/GRCh38_Ensembl_rmsk_TE.gtf"
+	output:
+		"/data/scratch/projects/punim0586/kat/50BPControlSamplesMappedTE/{sample}_Aligned.sortedByCoord.out.bam",
+		"/data/scratch/projects/punim0586/kat/50BPControlSamplesMappedTE/{sample}_Unmapped.out.mate1",
+		"/data/scratch/projects/punim0586/kat/50BPControlSamplesMappedTE/{sample}_Unmapped.out.mate2"
+	log:
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/logs/starTE/{sample}.log"
+	threads: 12
+	shell:
+		"module load web_proxy; module load gcc/8.3.0; module load star/2.7.3a; STAR --genomeDir {input.dir} "
+		"--readFilesIn {input.f1} {input.f2} "
+		"--runThreadN {threads} --sjdbOverhang 49 "
+		"--outFileNamePrefix /data/scratch/projects/punim0586/kat/50BPControlSamplesMappedTE/{wildcards.sample}_ "
+		"--outReadsUnmapped Fastx "
+		"--twopassMode Basic "
+		"--sjdbGTFfile {input.gtf} "
+		"--outSAMtype BAM SortedByCoordinate "
+		"--winAnchorMultimapNmax 100 "
+		"--outFilterMultimapNmax 100 "
+		"--outFilterScoreMinOverLread 0.4 "
+		"--outFilterMatchNminOverLread 0.4 "
+		"--chimSegmentMin 100 &> {log}"
+
+rule KMA_TE:
+	input:
+		f1="/data/scratch/projects/punim0586/kat/50BPControlSamplesMappedTE/{sample}_Unmapped.out.mate1",
+		f2="/data/scratch/projects/punim0586/kat/50BPControlSamplesMappedTE/{sample}_Unmapped.out.mate2"
+	output:
+		"/data/scratch/projects/punim0586/kat/50BPControlSamplesKMA_TE/{sample}.res",
+		"/data/scratch/projects/punim0586/kat/50BPControlSamplesKMA_TE/{sample}.mapstat"
+	log:
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/logs/KMA_TE/{sample}.log"
+	shell:
+		"/data/cephfs/punim0586/kbobowik/CCmetagen/kma/kma "
+		"-ipe {input.f1} {input.f2} " # -ipe Inputfile(s), paired end
+		"-o /data/scratch/projects/punim0586/kat/50BPControlSamplesKMA_TE/{wildcards.sample} " # -o output
+		"-ef " # -ef used to calculate abundance in reads per million (RPM)
+		"-t_db /data/scratch/projects/punim0586/kat/ncbi_nt_no_env_11jun2019 " # -t_db database; 
+		"-t 12 -1t1 " # -t threads; -1t1 One read to one template, no splicing performed
+		"-mem_mode " # -mem_mode *.index and *.seq are not loaded into memory, which enables one to map against larger databases
+		"-apm f " # -apm Paired end method, “f” force paired reads to pair
+		"-and &> {log}" # -and Both mrs and p_value thresholds has to reached to in order to report a template hit
+
+rule CCMetagen_TE:
+	input:
+		resultFile="/data/scratch/projects/punim0586/kat/50BPControlSamplesKMA_TE/{sample}.res",
+		mapstatFile="/data/scratch/projects/punim0586/kat/50BPControlSamplesKMA_TE/{sample}.mapstat"
+	output:
+		"/data/scratch/projects/punim0586/kat/50BPControlSamplesCCMetagen_TE/{sample}.csv",
+		"/data/scratch/projects/punim0586/kat/50BPControlSamplesCCMetagen_TE/{sample}.html",
+		"/data/scratch/projects/punim0586/kat/50BPControlSamplesCCMetagen_TE/{sample}.tsv"
+	log:
+		"/data/scratch/projects/punim0586/kat/Bipolar_controlSamples_EpiStudy/logs/CCMetagen_TE/{sample}.log"
+	conda:
+		"envs/CCMetagen.yaml"
+	shell:
+		"(export PATH='/home/kbobowik/.conda/envs/py37/bin:/usr/local/easybuild/software/Miniconda3/4.6.14/condabin:/usr/local/showq/0.15/bin:/usr/local/slurm/latest/bin:/usr/lib64/qt-3.3/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/opt/ibutils/bin:/opt/puppetlabs/bin:/opt/dell/srvadmin/bin:/data/cephfs/punim0586/kbobowik/CCmetagen/CCMetagen:/scratch/punim0586/kat/dfam/hmmer-3.3/src:/home/kbobowik/edirect:/home/kbobowik/.local/bin:/home/kbobowik/bin'; python3.7 /data/cephfs/punim0586/kbobowik/CCmetagen/CCMetagen/CCMetagen.py -i {input.resultFile} -o /data/scratch/projects/punim0586/kat/50BPControlSamplesCCMetagen_TE/{wildcards.sample} "
+		"--depth_unit rpm " # depth is in reads per million
+		"--mapstat {input.mapstatFile} " # if results are reported in reads per million, the mapstat file generated by KMA needs to be supplied
+		"--depth 1) &> {log}" # filter out matches with less than one read per million
