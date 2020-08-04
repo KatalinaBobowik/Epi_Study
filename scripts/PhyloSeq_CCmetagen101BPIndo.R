@@ -8,6 +8,7 @@ library(dplyr)
 library(plyr)
 library(phyloseq)
 library(reshape2)
+library(ggpubr)
 
 # set ggplot colour theme to white
 theme_set(theme_bw())
@@ -17,7 +18,7 @@ inputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/
 outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/"
 
 # Import data and convert to a phyloseq object
-raw_CCMetagen_data <- read.csv(paste0(inputdir,"101BPIndo_Unmapped_species_table_noRepeats_noRNA_noLowAccession_RPM.csv"),check.names=FALSE)
+raw_CCMetagen_data <- read.csv(paste0(inputdir,"101BPIndo_Unmapped_species_table_noRepeats_noRNA_RPM.csv"),check.names=FALSE)
 
 # Data preprocessing ------------------------------------
 
@@ -26,8 +27,10 @@ raw_CCMetagen_data=raw_CCMetagen_data[-which(raw_CCMetagen_data$Kingdom %in% c("
 raw_CCMetagen_data=raw_CCMetagen_data[-which(raw_CCMetagen_data$Phylum %in% c("Bacillariophyta","Cnidaria","Echinodermata","Mollusca")),]
 raw_CCMetagen_data=raw_CCMetagen_data[-which(raw_CCMetagen_data$Order %in% "Albuginales"),]
 
-# remove Schistosomes, as these were found to be mapping to only three accession numbers
-raw_CCMetagen_data=raw_CCMetagen_data[-which(raw_CCMetagen_data$Family=="Schistosomatidae"),]
+# remove all reference samples that had a low number of accession numbers
+# lowAccessiontaxa=read.table(paste0(outputdir,"lowAccessiontaxa.txt"))
+# lowAccessiontaxa=as.vector(lowAccessiontaxa[,1])
+# raw_CCMetagen_data=raw_CCMetagen_data[-which(raw_CCMetagen_data$Phylum %in% lowAccessiontaxa),]
 
 # add a new column containing family names and superkingdom
 raw_CCMetagen_data$SuperKFamily <- paste(raw_CCMetagen_data$Superkingdom, raw_CCMetagen_data$Family, sep="_")
@@ -46,13 +49,14 @@ CCMetagen_data <- aggregate(. ~ Superkingdom+Kingdom+SuperKFamily,CCMetagen_data
 colnames(CCMetagen_data)[which(names(CCMetagen_data)=="SuperKFamily")] <- "Family"
 # find out which names in family are duplicated (if duplicated, this will give us troubles later on)
 as.character(unique(CCMetagen_data[which(duplicated(CCMetagen_data$Family)),]$Family))
-# [1] "Eukaryota_unclassified"
+# "Eukaryota_unclassified"
 
 # get first instance of unclassified eukaryotes and merge with other unclassified eukaryotes 
-CCMetagen_data[grep("Eukaryota_unk_f|Eukaryota_unclassified",CCMetagen_data$Family)[1],-which(names(CCMetagen_data) %in% c("Superkingdom","Kingdom","Family"))]=colSums(CCMetagen_data[grep("Eukaryota_unk_f|Eukaryota_unclassified",CCMetagen_data$Family),-which(names(CCMetagen_data) %in% c("Superkingdom","Kingdom","Family"))])
+CCMetagen_data[grep("Eukaryota_unk_f|Eukaryota_unclassified",CCMetagen_data$Family)[1],4:128]=colSums(CCMetagen_data[grep("Eukaryota_unk_f|Eukaryota_unclassified",CCMetagen_data$Family),4:128])
 # delete the rest
 CCMetagen_data=CCMetagen_data[-grep("Eukaryota_unk_f|Eukaryota_unclassified",CCMetagen_data$Family)[2:length(grep("Eukaryota_unk_f|Eukaryota_unclassified",CCMetagen_data$Family))],]
 CCMetagen_data=droplevels(CCMetagen_data)
+
 
 # Convert to PhyloSeq object ------------------------------------------
 
@@ -66,10 +70,8 @@ rownames(abund_raw) <- CCMetagen_data[,which(names(CCMetagen_data)=="Family")]
 tax = tax_table(taxa_raw)
 taxa = otu_table(abund_raw, taxa_are_rows = TRUE)
 
-# remove things that aren't of interest
-taxa=taxa[-which(rownames(taxa) %in% c("unk_sk_unk_f", "Viruses_unclassified","Eukaryota_unclassified","Eukaryota_Diphyllobothriidae")),]
-
-# taxa=taxa[which(rownames(taxa) %in% c("Bacteria_Enterobacteriaceae", "Bacteria_Staphylococcaceae","Eukaryota_Plasmodiidae","Viruses_Flaviviridae")),]
+# remove unclassified taxa. These have a low number of reads mapping to them and add no extra information
+taxa=taxa[-which(rownames(taxa) %in% c("unk_sk_unk_f")),]
 
 # exploratory stuff on species per island
 
@@ -83,35 +85,34 @@ pdf(paste0(outputdir,"pathogensByIsland_noRepeatsNolowAccession.pdf"))
 ggplot(df, aes(x=island, y=value, fill=Var1)) + geom_bar(width = 1, stat = "identity") + labs(y="RPM", x = "Island")
 dev.off()
 
-# Plot only species with the reads over 10RPM
-
-taxa_noLowReads=taxa[which(rownames(taxa) %in% c("Bacteria_Enterobacteriaceae", "Bacteria_Staphylococcaceae","Eukaryota_Plasmodiidae","Viruses_Flaviviridae")),]
+# The high number of reads mapping to Plasmodium in Sumba is really just due to one sample
+taxa_noLowReads=taxa[which(rownames(taxa) %in% c("Eukaryota_Plasmodiidae")),]
 melted_taxa=melt(taxa_noLowReads)
 colnames(melted_taxa)=c("Pathogen","Island","RPM")
 melted_taxa$Island=gsub("\\..*","",melted_taxa$Island)
 melted_taxa$Pathogen=gsub("Bacteria_","",melted_taxa$Pathogen) %>% gsub("Eukaryota_","",.) %>% gsub("Viruses_","",.)
-pdf(paste0(outputdir,"pathogensByIsland_noRepeatsNolowAccession_Boxplot.pdf"))
-ggboxplot(melted_taxa, x = "Island", y = "RPM", fill="Island", add=c("boxplot"),add.params = c(list(fill = "white"), list(width=0.05))) + facet_wrap(~Pathogen, scales = "free")
+pdf(paste0(outputdir,"pathogensByIsland_plasmodium_Boxplot.pdf"))
+ggboxplot(melted_taxa, x = "Island", y = "RPM", fill="Island", add=c("boxplot"),add.params = c(list(fill = "white"), list(width=0.05)))
 dev.off()
 
 # back to Phyloseq pipeline -----------------------------
 
 CCMeta_physeq = phyloseq(taxa, tax)
-plot_bar(CCMeta_physeq, fill = "Superkingdom")
+# TopNOTUs <- names(sort(taxa_sums(CCMeta_physeq), TRUE))
+# TopFamilies <- prune_taxa(TopNOTUs, CCMeta_physeq)
+p=plot_bar(CCMeta_physeq, fill = "Family")
 
-TopNOTUs <- names(sort(taxa_sums(CCMeta_physeq), TRUE))
-TopFamilies <- prune_taxa(TopNOTUs, CCMeta_physeq)
-plot_bar(TopFamilies, fill = "Family")
-
-p = plot_bar(TopFamilies, fill="Family")
-p$data$Sample <- factor(p$data$Sample)
-
-familiesMPI = levels(p$data$Family)
+# set colour palette
+families=levels(p$data$Family)
+# get number of families in each kingdom
+table(sapply(strsplit(families, "[_.]"), `[`, 1))
+# Bacteria Eukaryota   Viruses 
+#      18         9         4 
 p$data$Family <- factor(p$data$Family) 
 
-PaletteBacteria = colorRampPalette(c("#ebe302", "#eb7a02"))(6)
-PaletteEukaryote = c("#1c9c02")
-PaletteVirus = colorRampPalette(c("#7b029c","maroon"))(3)
+PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(18)
+PaletteEukaryote = colorRampPalette(c("#fd8d3c","#800026"))(9)
+PaletteVirus = colorRampPalette(c("#78c679","#006837"))(4)
 
 Merged_Palette <- c(PaletteBacteria,PaletteEukaryote,PaletteVirus)
 
@@ -124,31 +125,32 @@ fig
 dev.off()
 
 # save OTU table
-scaledOTUs = sapply(1:123, function(x) otu_table(TopFamilies)[,x]/sum(otu_table(TopFamilies)[,x]))
-colnames(scaledOTUs) = colnames(otu_table(TopFamilies))
-rownames(scaledOTUs) = rownames(otu_table(TopFamilies))
+scaledOTUs = sapply(1:123, function(x) otu_table(CCMeta_physeq)[,x]/sum(otu_table(CCMeta_physeq)[,x]))
+colnames(scaledOTUs) = colnames(otu_table(CCMeta_physeq))
+rownames(scaledOTUs) = rownames(otu_table(CCMeta_physeq))
 write.table(scaledOTUs, file=paste0(outputdir,"scaledOTUs.txt"))
+
+# plot trends for each taxa
+melted_taxa=melt(taxa)
+colnames(melted_taxa)=c("Pathogen","Island","RPM")
+melted_taxa$Island=gsub("\\..*","",melted_taxa$Island)
+melted_taxa$Pathogen=gsub("Bacteria_","",melted_taxa$Pathogen) %>% gsub("Eukaryota_","",.) %>% gsub("Viruses_","",.)
+pdf(paste0(outputdir,"pathogensByIsland_AllPathogens_Boxplot.pdf"))
+ggboxplot(melted_taxa, x = "Island", y = "RPM", fill="Island", add=c("boxplot"),add.params = c(list(fill = "white"), list(width=0.05))) + facet_wrap(~Pathogen, scales = "free")
+dev.off()
 
 # without Plasmodium
 taxa=taxa[-which(rownames(taxa) %in% "Eukaryota_Plasmodiidae"),]
 
 CCMeta_physeq = phyloseq(taxa, tax)
-plot_bar(CCMeta_physeq, fill = "Superkingdom")
+p=plot_bar(CCMeta_physeq, fill = "Family")
 
-TopNOTUs <- names(sort(taxa_sums(CCMeta_physeq), TRUE))
-TopFamilies <- prune_taxa(TopNOTUs, CCMeta_physeq)
-plot_bar(TopFamilies, fill = "Family")
+PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(18)
+PaletteEukaryote = colorRampPalette(c("#fd8d3c","#800026"))(8)
+PaletteVirus = colorRampPalette(c("#78c679","#006837"))(4)
 
-p = plot_bar(TopFamilies, fill="Family")
-p$data$Sample <- factor(p$data$Sample)
 
-familiesMPI = levels(p$data$Family)
-p$data$Family <- factor(p$data$Family) 
-
-PaletteBacteria = colorRampPalette(c("#ebe302", "#eb7a02"))(6)
-PaletteVirus = colorRampPalette(c("#7b029c","maroon"))(3)
-
-Merged_Palette <- c(PaletteBacteria,PaletteVirus)
+Merged_Palette <- c(PaletteBacteria,PaletteEukaryote,PaletteVirus)
 
 fig <- p + scale_fill_manual(values=Merged_Palette) +
   geom_bar(aes(fill=Family), stat="identity", position="stack") +
