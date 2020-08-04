@@ -28,6 +28,8 @@ library(ade4)
 library(ComplexHeatmap)
 library(circlize)
 library(polycor)
+library(ggpubr)
+library(reshape2)
 
 # Set paths:
 inputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/dataPreprocessing/"
@@ -49,7 +51,7 @@ samplenamesOTU <- gsub("\\.","-", samplenamesOTU)
 samplenamesOTU <- gsub("Batch1","", samplenamesOTU)
 samplenamesOTU <- gsub("Batch3","", samplenamesOTU)
 samplenamesOTU <- gsub("Batch2","", samplenamesOTU)
-samplenamesOTU <- gsub("_lowAccessionRemoval","", samplenamesOTU)
+samplenamesOTU <- gsub("_noRNA","", samplenamesOTU)
 samplenamesOriginal <- as.character(rownames(y$samples))
 samplenamesOriginal <- sapply(strsplit(samplenamesOriginal, "[_.]"), `[`, 1)
 
@@ -70,9 +72,10 @@ y$samples$maxContributor = as.factor(maxContributor)
 # rename DGE list
 indoSampleSet = y
 indoSampleSet$samples$Age[which(is.na(y$samples$Age) == T)]=45
+
 lcpm <- cpm(indoSampleSet, log=TRUE)
 
-# get batch-corrected data
+# # get batch-corrected data
 design <- model.matrix(~0 + indoSampleSet$samples$Island)
 colnames(design)=gsub("Island", "", colnames(design))
 colnames(design)=gsub("indoSampleSet", "", colnames(design))
@@ -91,8 +94,6 @@ b$species=rownames(b)
 b=b[-which(rownames(b) %in% "y$samples$Mappi"),]
 b$species=rownames(b)
 colnames(b)[1:2]=c("correlation","pvalue")
-# newOTUs=rownames(b)[which(abs(b[,1])>=0.1)]
-# newOTUs=newOTUs[-which(newOTUs %in% "y$samples$Island")]
 
 # plot
 domain = sapply(strsplit(rownames(b), "[_.]"), `[`, 1)
@@ -129,23 +130,27 @@ SMBvsMPI=rownames(SMBvsMPI)[which(abs(SMBvsMPI$logFC) >= 1)]
 MTWvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_MTWvsMPI.txt")
 MTWvsMPI=rownames(MTWvsMPI)[which(abs(MTWvsMPI$logFC) >= 1)]
 
-#center and reduce to one unit of variance prior performing the PCA analysis.
-indoSampleSet <- t(apply(batch.corrected.lcpm,1,scale,scale=F))
-y$samples$Age[which(is.na(y$samples$Age) == T)]=45
+# center and reduce to one unit of variance prior to performing the PCA analysis, as suggested by Fave et al.
+indoSampleSet <- t(apply(lcpm,1,scale,scale=F))
 
-# Just for MPI
-#env=y$samples[grep("MPI",rownames(y$samples)),colnames(OTUs)]
+# First assign environmental variables and genes
 env=y$samples[,colnames(OTUs)]
 genes=indoSampleSet[unique(c(SMBvsMPI,MTWvsMPI)),]
 #genes=indoSampleSet
-
 genes=t(genes)
 colnames(genes)=y[colnames(genes),]$genes$SYMBOL
 colnames(genes)=make.unique(colnames(genes))
-rownames(genes) = colnames(batch.corrected.lcpm)
-#genes=genes[grep("MPI",rownames(genes)),]
-dudi1 <- dudi.pca(env, scale = F, scan = F, nf = 1)
-dudi2 <- dudi.pca(genes, scale = F, scan = F, nf = 1)
+rownames(genes) = colnames(lcpm)
+
+# Set up Coinertia analysis -
+# dudi1 and 2 do not need to be scaled since they are all in the same units 
+# i.e., the environmental variables are all in the same units and the gene expression
+# data is all in the same unit
+dudi1 <- dudi.pca(env, scale = F, scan = F, nf = 2)
+dudi2 <- dudi.pca(genes, scale = F, scan = F, nf = 3)
+pdf(paste0(outputdir,"DudiPCA_ENV.pdf"), width=15)
+Heatmap(dudi1$tab)
+dev.off()
 coin1 <- coinertia(dudi1,dudi2, scan = F, nf = 2)
 # plot coinartia analysis
 pdf(paste0(outputdir,"coinertiaANalysis.pdf"), width=15)
@@ -208,7 +213,7 @@ for (name in colnames(OTUs)){
 }
 
 # Prepare covariate matrix
-all.covars.df <- y$samples[,c("Island","Mappi",colnames(OTUs))]
+all.covars.df <- y$samples[,c("Island","Mappi","Age","RIN",colnames(OTUs))]
 
 for (name in colnames(OTUs)){
     initial = .bincode(get(name), breaks=seq(min(get(name), na.rm=T), max(get(name), na.rm=T), len = 80),include.lowest = TRUE)
@@ -227,9 +232,13 @@ write.table(all.pcs, file=paste0(outputdir,"pca_covariates_blood_RNASeqDeconCell
 
 # 2. Run ICA using JADE ---------------------------------------------------------
 
+# in the MineICA tutorial, they use a microarray dataset, so well get the logCPM of the data
+# in order to make it similar
+lcpm <- cpm(indoSampleSet, log=TRUE)
+
 # ICA setup
 
-## Features are mean-centered before ICA computation
+## as noted in the MineICA tutorial, features are mean-centered before ICA computation
 # indoSampleSet <- t(apply(indoSampleSet,1,scale,scale=FALSE))
 indoSampleSet <- t(apply(batch.corrected.lcpm,1,scale,scale=FALSE))
 colnames(indoSampleSet) <- colnames(y)
@@ -344,7 +353,7 @@ resQual <- qualVarAnalysis(params=params, icaSet=icaSetIndo,
 ## on all components.
 ## We are interested in correlations exceeding 0.3 in absolute value, and plots will only be drawn
 ## for correlations exceeding this threshold.
-resQuant <- quantVarAnalysis(params=params, icaSet=icaSetIndo, keepVar=c(colnames(OTUs),"Age"), 
+resQuant <- quantVarAnalysis(params=params, icaSet=icaSetIndo, keepVar=c(colnames(OTUs)), 
                              typeCor="pearson", cutoffOn="pval",
                              cutoff=0.05, adjustBy="none",  
                              path="quantVarAnalysis/", filename="quantVar", doPlot=T)
