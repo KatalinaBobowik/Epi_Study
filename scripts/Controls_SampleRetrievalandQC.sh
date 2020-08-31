@@ -13,7 +13,10 @@ trimdir=/data/cephfs/punim0586/kbobowik/EpidemiologicalSurvey/trimmomatic
 arraydir=/data/cephfs/punim0586/kbobowik/EpidemiologicalSurvey/scripts/array_files
 
 # All samples were first downloaded from GEO 
-wget https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE80974&format=file
+wget 'https://ftp.ncbi.nlm.nih.gov/geo/series/GSE80nnn/GSE80974/suppl/GSE80974_RAW.tar'
+
+# untar the file
+tar -xvf GSE80974_RAW.tar
 
 # samples which are not neededed are removed
 cd ${inputdir}/Controls

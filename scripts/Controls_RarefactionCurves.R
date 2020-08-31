@@ -9,6 +9,7 @@ library(dplyr)
 library(plyr)
 library(phyloseq)
 library(reshape2)
+library(vegan)
 
 # set ggplot colour theme to white
 theme_set(theme_bw())
@@ -17,18 +18,7 @@ theme_set(theme_bw())
 inputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/ReferenceFiles/EpiStudy/"
 outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/Controls"
 
----
-test=read.csv(paste0(inputdir,"Controls_Counts.csv"),check.names=FALSE)
-
-abund_raw <- as.matrix(test[,-which(colnames(CCMetagen_data) %in% c("Superkingdom","Kingdom","Family","Genus","Species"))])
-rownames(abund_raw) <- CCMetagen_data[,which(names(CCMetagen_data)=="Family")]
-
-
-rarecurve(t(round(otu_table(abund_raw, taxa_are_rows = TRUE))), step=50, cex=0.5)
----
-
-# Import data and convert to a phyloseq object
-raw_CCMetagen_data <- read.csv(paste0(inputdir,"controlDataset_merged.csv"),check.names=FALSE)
+raw_CCMetagen_data=read.csv(paste0(inputdir,"Controls_NoChordataOrArthropods_Counts.csv"),check.names=FALSE)
 
 # remove plants from the analysis
 raw_CCMetagen_data=raw_CCMetagen_data[-which(raw_CCMetagen_data$Kingdom=="Viridiplantae"),]
@@ -70,47 +60,4 @@ rownames(abund_raw) <- CCMetagen_data[,which(names(CCMetagen_data)=="Family")]
 tax = tax_table(taxa_raw)
 taxa = otu_table(abund_raw, taxa_are_rows = TRUE)
 
-CCMeta_physeq = phyloseq(taxa, tax)
-plot_bar(CCMeta_physeq, fill = "Superkingdom")
-
-TopNOTUs <- names(sort(taxa_sums(CCMeta_physeq), TRUE)[1:16])
-TopFamilies <- prune_taxa(TopNOTUs, CCMeta_physeq)
-plot_bar(TopFamilies, fill = "Family")
-
-p = plot_bar(TopFamilies, fill="Family")
-# set colour palette
-families=levels(p$data$Family)
-# get number of families in each kingdom
-table(sapply(strsplit(families, "[_.]"), `[`, 1))
- # Bacteria Eukaryota   Viruses 
- #    1        23          3 
-p$data$Family <- factor(p$data$Family) 
-
-PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(1)
-PaletteEukaryote = colorRampPalette(c("#fd8d3c","#800026"))(13)
-PaletteVirus = colorRampPalette(c("#78c679","#006837"))(2)
-
-Merged_Palette <- c(PaletteBacteria,PaletteEukaryote,PaletteVirus)
-
-fig <- p + scale_fill_manual(values=Merged_Palette) +
-  geom_bar(aes(fill=Family), stat="identity", position="stack") +
-  guides(fill=guide_legend(ncol=2))
-
-pdf(paste0(outputdir,"Allpathogens.pdf"), width=15)
-fig
-dev.off()
-
-# save OTU table
-scaledOTUs = sapply(1:123, function(x) otu_table(TopFamilies)[,x]/sum(otu_table(TopFamilies)[,x]))
-colnames(scaledOTUs) = colnames(otu_table(TopFamilies))
-rownames(scaledOTUs) = rownames(otu_table(TopFamilies))
-write.table(scaledOTUs, file=paste0(outputdir,"scaledOTUs.txt"))
-
-# get plot of frequency of each pathogen
-melted_taxa=melt(taxa)
-colnames(melted_taxa)=c("Pathogen","samples","RPM")
-#melted_taxa$samples=gsub("\\..*","",melted_taxa$samples)
-pdf(paste0(outputdir,"pathogensByIsland_plasmodium_Boxplot.pdf"))
-ggboxplot(melted_taxa, x = "Pathogen", y = "RPM", fill="Island", add=c("boxplot"),add.params = c(list(fill = "white"), list(width=0.05)))
-dev.off()
-
+rarecurve(t(round(otu_table(abund_raw, taxa_are_rows = TRUE))), step=50, cex=0.5)

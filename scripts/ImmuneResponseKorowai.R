@@ -30,6 +30,7 @@ library(circlize)
 library(polycor)
 library(ggpubr)
 library(reshape2)
+library("factoextra")
 
 # Set paths:
 inputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/dataPreprocessing/"
@@ -38,26 +39,31 @@ outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba
 
 # 1. load in expression data, log transform, then mean center data ----------------------------------------------------------------
 
+# Fucking rad!!!
+# http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/119-pca-in-r-using-ade4-quick-scripts/
+
 # load expression data and OTU file
 load(paste0(inputdir, "indoRNA.read_counts.TMM.filtered.Rda"))
 OTUs=read.table(paste0(refDir,"scaledOTUs.txt"))
+#OTUs=read.table(paste0(refDir,"OTUtable.txt"))
 
-# transform OTU file to make it the same configuration as the other variables, then make sure sample names are 
-# the same before appending to DGE list
+# transform OTU file to make it the same configuration as the expression list
 OTUs=t(OTUs)
+# make 'NA' values into 0's
 OTUs[is.na(OTUs)] <- 0
+
+# check to see if samplenames in the OTU file are in the same order as the expression list before appending
 samplenamesOTU <- as.character(rownames(OTUs))
 samplenamesOTU <- gsub("\\.","-", samplenamesOTU)
 samplenamesOTU <- gsub("Batch1","", samplenamesOTU)
 samplenamesOTU <- gsub("Batch3","", samplenamesOTU)
 samplenamesOTU <- gsub("Batch2","", samplenamesOTU)
-samplenamesOTU <- gsub("_noRNA","", samplenamesOTU)
 samplenamesOriginal <- as.character(rownames(y$samples))
 samplenamesOriginal <- sapply(strsplit(samplenamesOriginal, "[_.]"), `[`, 1)
-
-# check to see if samplenames are in the same order beofre appending
 identical(samplenamesOriginal,samplenamesOTU[match(samplenamesOriginal,samplenamesOTU)])
 # TRUE 
+
+# match OTU data oreder to expression list oreder 
 OTUs=OTUs[match(samplenamesOriginal,samplenamesOTU),]
 
 # append to DGE list
@@ -65,60 +71,22 @@ for (name in colnames(OTUs)){
   y$samples[[paste0(name)]]<- OTUs[,name]
 }
 
-# get factor variable of the highest OTU within each sample
-maxContributor = sapply(1:123, function(x) names(which.max(OTUs[x,])))
-y$samples$maxContributor = as.factor(maxContributor)
+# Get batch-corrected data -----------------------------------
 
-# rename DGE list
-indoSampleSet = y
-indoSampleSet$samples$Age[which(is.na(y$samples$Age) == T)]=45
-
-lcpm <- cpm(indoSampleSet, log=TRUE)
+# age is a variable we use in the model and NA values are not allowed. We'll replace NA with the mean age value
+y$samples$Age[which(is.na(y$samples$Age) == T)]=45
 
 # # get batch-corrected data
-design <- model.matrix(~0 + indoSampleSet$samples$Island)
+lcpm <- cpm(y, log=TRUE)
+design <- model.matrix(~0 + y$samples$Island)
+# rename columns to be "Mentawai", "Sumba", and "Mappi"
 colnames(design)=gsub("Island", "", colnames(design))
-colnames(design)=gsub("indoSampleSet", "", colnames(design))
+colnames(design)=gsub("y", "", colnames(design))
 colnames(design)=gsub("samples", "", colnames(design))
 colnames(design)=gsub("[\\$$]", "", colnames(design))
 colnames(design)=gsub("West Papua", "Mappi", colnames(design))
-batch.corrected.lcpm <- removeBatchEffect(lcpm, batch=indoSampleSet$samples$batch, covariates = cbind(indoSampleSet$samples$Age, indoSampleSet$samples$RIN, indoSampleSet$samples$CD8T, indoSampleSet$samples$CD4T, indoSampleSet$samples$NK, indoSampleSet$samples$Bcell, indoSampleSet$samples$Mono, indoSampleSet$samples$Gran), design=design)
-
-# correlation analysis ------------------------------------------
-
-# correlation between samples and Korowai
-a=hetcor(y$samples$Mappi, y$samples[,colnames(OTUs)])
-b=data.frame(a$correlations[,1],a$tests[,1])
-b=b[order(b$a.correlations...1.),]
-b$species=rownames(b)
-b=b[-which(rownames(b) %in% "y$samples$Mappi"),]
-b$species=rownames(b)
-colnames(b)[1:2]=c("correlation","pvalue")
-
-# plot
-domain = sapply(strsplit(rownames(b), "[_.]"), `[`, 1)
-c <- ggplot(b, aes(x = species, y = correlation))
-pdf(paste0(outputdir,"KorowaiVsPathogenLoad_Correlation.pdf"))
-c + geom_point(size=3, shape=19, color = as.numeric(as.factor(domain)), alpha=0.5) + geom_text(aes(label=ifelse(abs(correlation)>=0.3,as.character(rownames(b)),'')),hjust=0,vjust=0) + theme(axis.text.x=element_blank(),axis.ticks.x=element_blank(),panel.background=element_rect(colour="#d2d3d5",fill="#FFFFFF"), panel.grid.major = element_line(size = 0.5, linetype = 'solid',colour = "#ececed"),panel.grid.minor = element_line(size = 0.25, linetype = 'solid',colour = "#ececed")) + ggtitle("Korowai vs Pathogen Load")
-dev.off()
-
-# correlation between samples and Island
-a=hetcor(y$samples$Island, y$samples[,colnames(OTUs)])
-b=data.frame(a$correlations[,1],a$tests[,1])
-b=b[order(b$a.correlations...1.),]
-b$species=rownames(b)
-b=b[-which(rownames(b) %in% "y$samples$Island"),]
-b$species=rownames(b)
-colnames(b)[1:2]=c("correlation","pvalue")
-# newOTUs=rownames(b)[which(abs(b[,1])>=0.1)]
-# newOTUs=newOTUs[-which(newOTUs %in% "y$samples$Island")]
-
-# plot
-domain = sapply(strsplit(rownames(b), "[_.]"), `[`, 1)
-c <- ggplot(b, aes(x = species, y = correlation))
-pdf(paste0(outputdir,"IslandVsPathogenLoad_Correlation.pdf"))
-c + geom_point(size=3, shape=19, color = as.numeric(as.factor(domain)), alpha=0.5) + geom_text(aes(label=ifelse(abs(correlation)>=0.2,as.character(rownames(b)),'')),hjust=0,vjust=0) + theme(axis.text.x=element_blank(),axis.ticks.x=element_blank(),panel.background=element_rect(colour="#d2d3d5",fill="#FFFFFF"), panel.grid.major = element_line(size = 0.5, linetype = 'solid',colour = "#ececed"),panel.grid.minor = element_line(size = 0.25, linetype = 'solid',colour = "#ececed")) + ggtitle("Island vs Pathogen Load")
-dev.off()
+# regress out variables influencing expression
+batch.corrected.lcpm <- removeBatchEffect(lcpm, batch=y$samples$batch, covariates = cbind(y$samples$Age, y$samples$RIN, y$samples$CD8T, y$samples$CD4T, y$samples$NK, y$samples$Bcell, y$samples$Mono, y$samples$Gran), design=design)
 
 # Co-inertia analysis between Mappi samples gene expression levels and pathogen load -------------------
 
@@ -131,17 +99,19 @@ MTWvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMe
 MTWvsMPI=rownames(MTWvsMPI)[which(abs(MTWvsMPI$logFC) >= 1)]
 
 # center and reduce to one unit of variance prior to performing the PCA analysis, as suggested by Fave et al.
-indoSampleSet <- t(apply(lcpm,1,scale,scale=F))
+indoSampleSet <- t(apply(batch.corrected.lcpm,1,scale,scale=F))
 
 # First assign environmental variables and genes
 env=y$samples[,colnames(OTUs)]
+#env=env[grep("MPI", rownames(env)),]
 genes=indoSampleSet[unique(c(SMBvsMPI,MTWvsMPI)),]
 #genes=indoSampleSet
 genes=t(genes)
 colnames(genes)=y[colnames(genes),]$genes$SYMBOL
 colnames(genes)=make.unique(colnames(genes))
 rownames(genes) = colnames(lcpm)
-
+genes=genes[,grep("RNF182|MDGA1|TMTC1|TUBB2A|SIGLEC14|MARCO|MYOM2|KCNMA1|GRB14|RAP1GAP|UTS2|SOX5|OCLN",colnames(genes))]
+#genes=genes[grep("MPI", rownames(genes)),]
 # Set up Coinertia analysis -
 # dudi1 and 2 do not need to be scaled since they are all in the same units 
 # i.e., the environmental variables are all in the same units and the gene expression
@@ -165,6 +135,56 @@ dev.off()
 names=names(which(abs(colSums(coin1$tab))>0))
 Heatmap(t(coin1$tab[,which(abs(colSums(coin1$tab))>0)]),col=colorRamp2(c(-1, 0, 1), c("blue", "white", "red")))
 
+# factoextra pipeine
+
+pdf(paste0(outputdir,"indDudiPCA.pdf"))
+fviz_pca_ind(dudi1,
+             col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = F     # Avoid text overlapping
+             )
+dev.off()
+
+pdf(paste0(outputdir,"envDudiPCA.pdf"))
+fviz_pca_var(dudi1,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = F     # Avoid text overlapping
+             )
+dev.off()
+
+pdf(paste0(outputdir,"envAndindDudiPCA.pdf"))
+fviz_pca_biplot(dudi1, repel = F,
+                col.var = "#2E9FDF", # Variables color
+                col.ind = "#696969"  # Individuals color
+                )
+
+dev.off()
+
+
+pdf(paste0(outputdir,"Dudi2_indDudiPCA.pdf"))
+fviz_pca_ind(dudi2,
+             col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = F     # Avoid text overlapping
+             )
+dev.off()
+
+pdf(paste0(outputdir,"Dudi2_envDudiPCA.pdf"))
+fviz_pca_var(dudi2,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = F     # Avoid text overlapping
+             )
+dev.off()
+
+pdf(paste0(outputdir,"Dudi2_envAndindDudiPCA.pdf"))
+fviz_pca_biplot(dudi2, repel = F,
+                col.var = "contrib", # Variables color
+                gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+                col.ind = "#696969"  # Individuals color
+                )
+dev.off()
 # PCA analysis ----------------------------------------
 
 # Is there structure/variance between MPI and other islands?
@@ -229,208 +249,4 @@ for (name in colnames(OTUs)){
 all.pcs <- pc.assoc(pcaresults)
 all.pcs$Variance <- pcaresults$sdev^2/sum(pcaresults$sdev^2)
 write.table(all.pcs, file=paste0(outputdir,"pca_covariates_blood_RNASeqDeconCell.txt"), col.names=T, row.names=F, quote=F, sep="\t")
-
-# 2. Run ICA using JADE ---------------------------------------------------------
-
-# in the MineICA tutorial, they use a microarray dataset, so well get the logCPM of the data
-# in order to make it similar
-lcpm <- cpm(indoSampleSet, log=TRUE)
-
-# ICA setup
-
-## as noted in the MineICA tutorial, features are mean-centered before ICA computation
-# indoSampleSet <- t(apply(indoSampleSet,1,scale,scale=FALSE))
-indoSampleSet <- t(apply(batch.corrected.lcpm,1,scale,scale=FALSE))
-colnames(indoSampleSet) <- colnames(y)
-
-## run ICA-JADE with 5 components and 10,000 iterations
-resJade <- runICA(X=indoSampleSet, nbComp=5, method = "JADE", maxit=10000) 
-
-## build parameters. Selected cutoff applied to the absolute feature/gene projection values to be consider as contributors is 3
-params <- buildMineICAParams(resPath=paste0(outputdir,"ICA/"), selCutoff=3, pvalCutoff=0.05)
-
-## define the reference samples if any, here no normal sample is available
-refSamplesindoSampleSet <- character(0)
-rownames(resJade$A) = colnames(indoSampleSet)
-
-# set up annotation
-mart <- useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl")
-typeIDindoSampleSet <- c(geneID_annotation="SYMBOL", geneID_biomart="ensembl_gene_id", featureID_biomart="ensembl_gene_id")
-
-# Run ICA using JADE 
-resBuild <- buildIcaSet(params=params, A=data.frame(resJade$A), S=data.frame(resJade$S), dat=indoSampleSet, pData=y$samples, typeID= typeIDindoSampleSet, refSamples=refSamplesindoSampleSet, mart=mart)
-
-# extract data from anIcaSetinstance
-icaSetIndo <- resBuild$icaSet
-params <- resBuild$params
-annot <- pData(icaSetIndo)
-
-# 3. Get genes driving variation in the first 5 PCs ---------------------------------------------------------
-
-# When applying ICA decomposition to genomicdata, for example here gene expression data, the distribution of the gene 
-# projections on the ICs is expected to be super-Gaussian: a large portion of genes follows a (super-)Gaussian centered 
-# at zero and a small portion belongs to an outgrowth located on the right and/or on the left of thedistribution.  
-# In order to select the elements belonging to this outgrowth, I use a threshold ofe 3 standard deviations from the mean.  
-# These can be refered to as the “contributing genes”.
-
-contrib <- selectContrib(icaSetIndo, cutoff=3, level="genes")
-## Show the first contributing genes of the first and third components
-sort(abs(contrib[[1]]),decreasing=TRUE)[1:10]
-sort(abs(contrib[[3]]),decreasing=TRUE)[1:10]
-# Here is the histogram of the projection values for the first 
-pdf(paste0(outputdir,"hist.pdf"))
-hist(S(icaSetIndo)[,1], breaks=50, main="Distribution of feature projection on the first component", xlab="projection values") 
-abline(v=c(3,-3), col="red", lty=2)
-dev.off()
-
-# One can also extract data from a specific component
-# e.g., extract sample contributions and gene projections of the second component
-comp2 <- getComp(icaSetIndo, level="genes", ind=2)
-## access the sample contributions 
-comp2$contrib[1:5]
-## access the gene projections
-comp2$proj[1:5]
-
-# Get the scaled projections for each gene
-
-# restrict the phenotype data to the variables of interest
-varLabels(icaSetIndo)
-keepVar <- c("Island","maxContributor")
-resW <- writeProjByComp(icaSet=icaSetIndo, params=params, mart=mart, level='genes', selCutoffWrite=2.5)
-head(resW$listAnnotComp[[1]])
-## show the number of components a gene contributes to
-head(resW$nbOccInComp)
-
-# get barpllots of proportion of contributing genes vs PCs
-contributingGenes=matrix(nrow=3,ncol=5)
-rownames(contributingGenes)=c("SMBvsMPI","MTWvsMPI","SMBvsMTW")
-colnames(contributingGenes)=c("PC1","PC2","PC3","PC4","PC5")
-for (i in 1:5){
-  contributingGenes[1,i]=length(contrib[[i]][which(names(contrib[[i]]) %in% SMBvsMPI)])
-  #contributingGenes[1,2]=length(SMBvsMPI)
-  contributingGenes[2,i]=length(contrib[[i]][which(names(contrib[[i]]) %in% MTWvsMPI)])
-  #contributingGenes[2,2]=length(MTWvsMPI)
-  contributingGenes[3,i]=length(contrib[[i]][which(names(contrib[[i]]) %in% SMBvsMTW)])
-}
-contributingGenes=as.data.frame(contributingGenes)
-contributingGenes$type="contribGenes"
-contributingGenes$island=rownames(contributingGenes)
-
-c=do.call("cbind", replicate(5, c(length(SMBvsMPI),length(MTWvsMPI),length(SMBvsMTW)), simplify = FALSE))
-c=as.data.frame(c)
-rownames(c)=c("SMBvsMPI","MTWvsMPI","SMBvsMTW")
-colnames(c)=c("PC1","PC2","PC3","PC4","PC5")
-c$type="deGenes"
-c$island=rownames(c)
-allGenes=rbind(contributingGenes,c)
-meltedGenes=melt(allGenes)
-
-ggplot(meltedGenes, aes(x = island, y = value, fill = type)) + 
-  geom_bar(stat = 'identity', position = 'stack') + facet_grid(~ variable)
-
-
-# Which variables are driving variability in each PC? --------------------------------------------
-
-# Association with sample variables 
-
-# test  whether  the  groups  of  samples  formed  by  the  qualitative  variables  
-# are differently distributed on the components in terms of contribution value 
-# If you would like to plot densities rather than boxplots, use'typePlot=density'
-OTUQual=c()
-for (sample in colnames(OTUs)){
-  if(length(levels(y$samples[,sample])) > 1){
-    OTUQual=c(OTUQual,sample)
-  }
-}
-
-resQual <- qualVarAnalysis(params=params, icaSet=icaSetIndo, 
-                           keepVar=c("Island",OTUQual),
-                           adjustBy="none", doPlot=T,
-                           path="qualVarAnalysis2/", typePlot="boxplot",filename="qualVar")
-
-### Quantitative variables
-## Compute pearson correlations between variable 'age' and the sample contributions
-## on all components.
-## We are interested in correlations exceeding 0.3 in absolute value, and plots will only be drawn
-## for correlations exceeding this threshold.
-resQuant <- quantVarAnalysis(params=params, icaSet=icaSetIndo, keepVar=c(colnames(OTUs)), 
-                             typeCor="pearson", cutoffOn="pval",
-                             cutoff=0.05, adjustBy="none",  
-                             path="quantVarAnalysis/", filename="quantVar", doPlot=T)
-
-
-# get Pearson correlation
-resQuant$cor
-
-# make a heatmap of the correlations
-pdf(paste0(outputdir,"heatmapQuantVarAnalysisCorrelations_MPI.pdf"))
-Heatmap(resQuant$cor, cluster_columns=F, col=colorRamp2(c(-0.5, 0, 0.5), c("blue", "white", "red")))
-dev.off()
-
-# Study the bimodality of sample contributions in matrixA -----------------------
-
-# The distribution of the sample contributions on a component is often bimodal
-# Let's plot this out
-
-# Selection of samples associated with a component
-resmix <- plotAllMix(A=A(icaSetIndo), nbMix=2, nbBreaks=50)
-## ## plot the positions of the samples on the second component according to their ER status
-## ## (in a file "er.pdf") 
-plotPosAnnotInComp(icaSet=icaSetIndo, params=params, keepVar=keepVar, funClus="Mclust")
-
-
-# Cluster samples --------------------------------
-
-# cluster the samples using the mixing matrix A on teh first and second component
-clus1 <- clusterSamplesByComp(params=params, icaSet=icaSetIndo[,,,1:2],
-                              funClus="Mclust", clusterOn="A", nbClus=2, filename="comp1Mclust")
-
-## The obtained clusters are written in the file "comp1Mclus.txt" of the result path.
-clus1$clus[[2]][1:5]
-
-# or perform several clusterings, using different algorithms 
-clus2 <- clusterSamplesByComp_multiple(params=params, icaSet=icaSetIndo[,,1:2], 
-                                     funClus="kmeans", clusterOn=c("A","S"), level="features", 
-                                     nbClus=2, filename="comparKmeans")
-
-## Access Rand index
-clus2$comparClus
-
-# get association with the qualitative variables
-# perform  the  chi-square  tests  of independence to study the association between the clustering obtained on each component and the qualitative variables. 
-clus2var <- clusVarAnalysis(icaSet=icaSetIndo[,,1:2], params=params, 
-                            keepVar=colnames(OTUs), 
-                            resClus=clus1$clus, funClus="Mclust", adjustBy="none", 
-                            doPlot=TRUE, path="clus2var/", filename="resChitests-Mcluscomp1")
-
-clus2var <- clusVarAnalysis(icaSet=icaSetIndo, params=params, 
-                            keepVar=colnames(OTUs), 
-                            resClus=clus1$clus, funClus="Mclust", adjustBy="none", 
-                            doPlot=TRUE, path="clus2var/", filename="resChitests-Mcluscomp1")
-
-
-## p-values are also contained in the ouput of the function:
-clus2var
-
-
-##
-## Run the analysis of the ICA decomposition
-# runAn(params=params, icaSet=icaSetIndo, writeGenesByComp = TRUE,keepVar=keepVar, dbGOstats = "KEGG")
-keepVar <- c("Island",colnames(OTUs))
-
-#  Plot heatmaps of the contributing elements
-resH <- plot_heatmapsOnSel(icaSet = icaSetIndo, selCutoff = 3, level = "genes", keepVar = keepVar,doSamplesDendro = TRUE, doGenesDendro = TRUE, heatmapCol = maPalette(low = "blue", high = "red", mid = "yellow", k=44),file = "heatmapWithDendro", annot2col=annot2col(params))
-# heatmap where genes and samples are ordered by contribution values
-resH <- plot_heatmapsOnSel(icaSet = icaSetIndo, selCutoff = 3, level = "genes",keepVar = keepVar,doSamplesDendro = FALSE, doGenesDendro = FALSE, heatmapCol = maPalette(low = "blue", high = "red", mid = "yellow", k=44),file = "heatmapWithoutDendro", annot2col=annot2col(params))
-
-
----------
-OTUs2=OTUs
-OTUs2[which(OTUs2>0)]=T
-colnames(OTUs2)=paste(colnames(OTUs2), "Binary",sep="_")
-for (name in colnames(OTUs2)){
-  y$samples[[paste0(name)]]<- as.factor(OTUs2[,name])
-}
------
-
 
