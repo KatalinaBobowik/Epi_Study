@@ -18,4 +18,4 @@ done > ${array_dir}/CCMetagen_AllControlFiles.txt
 CCMetagen_merge.py --input_fp ~/CCMetagenOutput/Controls/ --output_fp ControlUnmapped_species_table_RPM_depth0
 
 
-CCMetagen.py -i /data/cephfs/punim0586/kbobowik/EpidemiologicalSurvey/data/test/test.res -o /data/cephfs/punim0586/kbobowik/EpidemiologicalSurvey/data/test/test1
+CCMetagen.py -i . -o MalieControls_Counts_NoFilter

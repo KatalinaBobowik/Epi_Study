@@ -1,0 +1,60 @@
+configfile: "ControlDengue_IDs.yaml"
+
+sample=config["samples"]
+
+rule all:
+	input:
+		expand("/scratch/punim0586/kat/DengueSamplesFastQC/{sample}_fastqc.html", sample=config["samples"]),
+		expand("/scratch/punim0586/kat/DengueSamplesFastQC/{sample}_fastqc.zip", sample=config["samples"]),
+		expand("/scratch/punim0586/kat/DengueSamplesMapped/{sample}_Aligned.sortedByCoord.out.bam", sample=config["samples"]),
+		expand("/scratch/punim0586/kat/DengueSamplesMapped/{sample}_Unmapped.out.mate1", sample=config["samples"])
+
+rule trimmomatic_pe:
+	input:
+		r1="/scratch/punim0586/kat/ControlSamples_Dengue/{sample}.fastq",
+	output:
+		r1="/scratch/punim0586/kat/DengueDataTrimmed/{sample}.fastq",
+	log:
+		"/scratch/punim0586/kat/101BPIndonesianSamples/logs/trimmomatic/{sample}.log"
+	threads: 12
+	shell:
+		"module load web_proxy; module load java; java -jar /data/cephfs/punim0586/kbobowik/bin/Trimmomatic-0.36/trimmomatic-0.36.jar SE "
+		"-threads {threads} -phred33 {input.r1} {output.r1} "
+		"LEADING:20 TRAILING:20 MINLEN:90 -trimlog {log}"
+
+rule fastqc:
+	input:
+		"/scratch/punim0586/kat/DengueDataTrimmed/{sample}.fastq"
+	output:
+		"/scratch/punim0586/kat/DengueSamplesFastQC/{sample}_fastqc.html",
+		"/scratch/punim0586/kat/DengueSamplesFastQC/{sample}_fastqc.zip",
+	conda:
+		"envs/QC.yaml"
+	log:
+		"/scratch/punim0586/kat/101BPIndonesianSamples/logs/fastqc/{sample}.log"
+	threads: 12
+	shell:
+		"module load web_proxy; fastqc {input} -t {threads} --extract --outdir=/scratch/punim0586/kat/DengueSamplesFastQC/ &> {log}"
+
+rule star:
+	input:
+		f1="/scratch/punim0586/kat/DengueDataTrimmed/{sample}.fastq",
+		dir=directory("/scratch/punim0586/kat/101BPIndonesianGenome"),
+		gtf="/data/cephfs/punim0586/shared/genomes/hg38/GTF_annotation/Homo_sapiens.GRCh38.90.gtf"
+	output:
+		"/scratch/punim0586/kat/DengueSamplesMapped/{sample}_Aligned.sortedByCoord.out.bam",
+		"/scratch/punim0586/kat/DengueSamplesMapped/{sample}_Unmapped.out.mate1"
+	log:
+		"/scratch/punim0586/kat/101BPIndonesianSamples/logs/star/{sample}.log"
+	threads: 12
+	shell:
+		# unfortunately I have no better way of doing it- define sample name then use that as dirname
+		"module load web_proxy; module load star/2.7.3a;  STAR --genomeDir {input.dir} "
+		"--readFilesIn {input.f1} "
+		"--runThreadN {threads} --sjdbOverhang 100 "
+		"--outFileNamePrefix /scratch/punim0586/kat/DengueSamplesMapped/{wildcards.sample}_ "
+		"--outSAMunmapped Within "
+		"--outReadsUnmapped Fastx "
+		"--twopassMode Basic "
+		"--sjdbGTFfile {input.gtf} "
+		"--outSAMtype BAM SortedByCoordinate &> {log}"

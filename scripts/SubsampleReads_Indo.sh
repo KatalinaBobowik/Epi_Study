@@ -25,7 +25,7 @@ for sample in ${inputdir}/*_1.fastq; do
 	sed 's/\s.*$//' ${inputdir}/${sampleID}_2.fastq > ${outdir}/${sampleID}_2.fastq
 done
 
-# chaneg colons to pipes and add on read pair ending
+# change colons to pipes and add on read pair ending
 inputdir=/data/scratch/projects/punim0586/kat/101BPIndo_SubSampled_EndingRemoved
 outdir=/data/scratch/projects/punim0586/kat/101BPIndo_SubSampled_EndingRemoved
 for sample in ${inputdir}/*_1.fastq; do

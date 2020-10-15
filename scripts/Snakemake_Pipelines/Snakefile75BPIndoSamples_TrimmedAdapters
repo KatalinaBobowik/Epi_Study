@@ -1,0 +1,73 @@
+configfile: "config.yaml"
+
+sample=config["samples"]
+
+rule all:
+	input:
+		expand("/data/scratch/projects/punim0586/kat/75BPIndonesianSamples/qc/fastqc/{sample}_1_fastqc.html", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/75BPIndonesianSamples/qc/fastqc/{sample}_2_fastqc.html", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/75BPIndonesianSamples/qc/fastqc/{sample}_1_fastqc.zip", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/75BPIndonesianSamples/qc/fastqc/{sample}_2_fastqc.zip", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesMapped/{sample}_Aligned.sortedByCoord.out.bam", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesMapped/{sample}_Unmapped.out.mate1", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesMapped/{sample}_Unmapped.out.mate2", sample=config["samples"])
+
+rule trimmomatic:
+	input:
+		r1="/data/scratch/projects/punim0586/kat/data/raw_data_copied/{sample}_1.fastq.gz",
+		r2="/data/scratch/projects/punim0586/kat/data/raw_data_copied/{sample}_2.fastq.gz"
+	output:
+		r1="/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesTrimmed/{sample}_1.fastq.gz",
+		r2="/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesTrimmed/{sample}_2.fastq.gz",
+		# reads where trimming entirely removed the mate
+		r1_unpaired="/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesTrimmed/{sample}_1.unpaired.fastq.gz",
+		r2_unpaired="/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesTrimmed/{sample}_2.unpaired.fastq.gz"
+	log:
+		"/scratch/punim0586/kat/75BPIndonesianSamples/logs/trimmomatic/{sample}.log"
+	threads: 12
+	shell:
+		"module load web_proxy; module load java; java -jar /data/cephfs/punim0586/kbobowik/bin/Trimmomatic-0.36/trimmomatic-0.36.jar PE "
+		"-threads {threads} -phred33 {input.r1} {input.r2} {output.r1} "
+		"{output.r1_unpaired} {output.r2} {output.r2_unpaired} CROP:75 LEADING:20 TRAILING:20 MINLEN:65 ILLUMINACLIP:/data/cephfs/punim0586/kbobowik/bin/Trimmomatic-0.36/adapters/TruSeq3-PE.fa:2:30:10:2:keepBothReads -trimlog {log}"
+
+rule fastqc:
+	input:
+		["/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesTrimmed/{sample}_1.fastq.gz", "/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesTrimmed/{sample}_2.fastq.gz"]
+	output:
+		"/data/scratch/projects/punim0586/kat/75BPIndonesianSamples/qc/fastqc/{sample}_1_fastqc.html",
+		"/data/scratch/projects/punim0586/kat/75BPIndonesianSamples/qc/fastqc/{sample}_2_fastqc.html",
+		"/data/scratch/projects/punim0586/kat/75BPIndonesianSamples/qc/fastqc/{sample}_1_fastqc.zip",
+		"/data/scratch/projects/punim0586/kat/75BPIndonesianSamples/qc/fastqc/{sample}_2_fastqc.zip"
+	conda:
+		"envs/QC.yaml"
+	log:
+		"/scratch/punim0586/kat/75BPIndonesianSamples/logs/fastqc/{sample}.log"
+	threads: 12
+	shell:
+		"module load web_proxy; fastqc {input} -t {threads} --extract --outdir=/data/scratch/projects/punim0586/kat/75BPIndonesianSamples/qc/fastqc/ &> {log}"
+
+rule star:
+	input:
+		f1="/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesTrimmed/{sample}_1.fastq.gz",
+		f2="/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesTrimmed/{sample}_2.fastq.gz",
+		dir=directory("/scratch/punim0586/kat/75BPTBGenome"),
+		gtf="/data/cephfs/punim0586/shared/genomes/hg38/GTF_annotation/Homo_sapiens.GRCh38.90.gtf"
+	output:
+		"/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesMapped/{sample}_Aligned.sortedByCoord.out.bam",
+		"/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesMapped/{sample}_Unmapped.out.mate1",
+		"/data/scratch/projects/punim0586/kat/75BPIndonesianSamplesMapped/{sample}_Unmapped.out.mate2"
+	log:
+		"/scratch/punim0586/kat/75BPIndonesianSamples/logs/star/{sample}.log"
+	threads: 12
+	shell:
+		# unfortunately I have no better way of doing it- define sample name then use that as dirname
+		"module load web_proxy; module load star/2.7.3a; x=`basename {input.f1} _1.fastq.gz`; STAR --genomeDir {input.dir} "
+		"--readFilesIn {input.f1} {input.f2} "
+		"--runThreadN {threads} --sjdbOverhang 74 "
+		"--readFilesCommand zcat "
+		"--outFileNamePrefix /data/scratch/projects/punim0586/kat/75BPIndonesianSamplesMapped/${{x}}_ "
+		"--outSAMunmapped Within "
+		"--outReadsUnmapped Fastx "
+		"--twopassMode Basic "
+		"--sjdbGTFfile {input.gtf} "
+		"--outSAMtype BAM SortedByCoordinate &> {log}"

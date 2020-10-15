@@ -1,0 +1,30 @@
+{
+	"__default__":
+	{
+		"account": "punim0639",
+		"mem": "200000",
+		"time": "4:0:0",
+		"partition": "mig"
+	},
+	"fastqc":
+	{
+		"time": "1:00:0",
+		"mem": "40000",
+		"partition": "mig",
+		"account": "punim0639"
+	},
+	"genome_index_second":
+	{
+		"time": "4:00:0",
+		"mem": "250000",
+		"partition": "mig",
+		"account": "punim0639"
+	},
+	"RepeatMasker":
+	{
+		"account": "punim0639",
+		"mem": "200000",
+		"time": "24:0:0",
+		"partition": "mig"
+        }
+}

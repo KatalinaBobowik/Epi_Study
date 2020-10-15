@@ -21,6 +21,14 @@ preSubSample$Raw=preSubSample$Raw-preSubSample$Trimmed
 preSubSample$Trimmed=preSubSample$Trimmed-preSubSample$Unmapped
 data=melt(preSubSample)
 
+# Make a barplot of the unmapped reads
+pdf(paste0(outputdir,"LibrarySize_UnmappedReads.pdf"), width=10)
+ggplot(preSubSample, aes(x=Samples, y=Unmapped)) +
+  geom_bar(stat="identity", fill = "#20A387FF") +
+  theme(axis.text.x = element_text(angle = 90)) + ylab("Library Size") +
+  ggtitle("Unmapped Reads")
+dev.off()
+
 pdf(paste0(outputdir,"QCofReads_PreSubSample.pdf"), width=10)
 ggplot(data, aes(fill=variable, y=value, x=Samples)) + 
     geom_bar(position="fill", stat="identity") + 
@@ -44,4 +52,24 @@ ggplot(data, aes(fill=forcats::fct_rev(variable), y=value, x=Samples)) +
     scale_fill_viridis(direction = 1, discrete = TRUE, alpha = 0.9) +
     ylab("Number of Reads")
 dev.off()
+
+# make a barplot of the libraries before and after sub-sampling
+allreads=read.table(paste0(inputdir,"noRepeats_Sorted.txt"), header=F)
+colnames(allreads)=c("Samples","LibrarySize")
+pdf(paste0(outputdir,"LibrarySize_AllReads.pdf"), width=10)
+ggplot(allreads, aes(x=Samples, y=LibrarySize)) +
+  geom_bar(stat="identity", fill = "#20A387FF") +
+  theme(axis.text.x = element_text(angle = 90)) + ylab("Library Size") +
+  ggtitle("All Reads")
+dev.off()
+
+pdf(paste0(outputdir,"LibrarySize_SubSampled.pdf"), width=10)
+ggplot(postSubSample, aes(x=Samples, y=noRepeats_noHuman)) +
+  geom_bar(stat="identity", fill = "#20A387FF") +
+  theme(axis.text.x = element_text(angle = 90)) + ylab("Library Size") +
+  ggtitle("Sub-Sampled")
+dev.off()
+
+
+
 

@@ -1,0 +1,70 @@
+configfile: "config.yaml"
+
+sample=config["samples"]
+
+rule all:
+	input:
+		expand("/data/scratch/projects/punim0586/kat/101BPIndoKneaddata_AllReads/{sample}_1_kneaddata.repeats.removed.1.fastq", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/101BPIndoKneaddata_AllReads/{sample}_1_kneaddata.repeats.removed.2.fastq", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesKMA_AllReads/{sample}.res", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesKMA_AllReads/{sample}.mapstat", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesCCMetagen_AllReads_Counts/{sample}.csv", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesCCMetagen_AllReads_Counts/{sample}.html", sample=config["samples"]),
+		expand("/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesCCMetagen_AllReads_Counts/{sample}.tsv", sample=config["samples"])
+
+rule cleanData:
+	input:
+		f1="/data/scratch/projects/punim0586/kat/101BPIndo_EndingRemoved/{sample}_1.fastq",
+		f2="/data/scratch/projects/punim0586/kat/101BPIndo_EndingRemoved/{sample}_2.fastq",
+		bmtaggerdir=directory("/data/scratch/projects/punim0586/kat/kneaddataGenome/Homo_sapiens_BMTagger_v0.1")
+	output:
+		f1="/data/scratch/projects/punim0586/kat/101BPIndoKneaddata_AllReads/{sample}_1_kneaddata.repeats.removed.1.fastq",
+		f2="/data/scratch/projects/punim0586/kat/101BPIndoKneaddata_AllReads/{sample}_1_kneaddata.repeats.removed.2.fastq",
+	log:
+		"/data/scratch/projects/punim0586/kat/101BPIndonesianSamples/logs/cleanData/{sample}.log"
+	conda:  
+		"envs/kneaddata.yaml"
+	shell:
+		"kneaddata --input {input.f1} --input {input.f2} "
+		"--output /data/scratch/projects/punim0586/kat/101BPIndoKneaddata_AllReads --bypass-trim --run-trf -db {input.bmtaggerdir}/Homo_sapiens_assembly19.fasta --run-bmtagger &> {log}"
+
+rule KMA:
+	input:
+		f1="/data/scratch/projects/punim0586/kat/101BPIndoKneaddata_AllReads/{sample}_1_kneaddata.repeats.removed.1.fastq",
+		f2="/data/scratch/projects/punim0586/kat/101BPIndoKneaddata_AllReads/{sample}_1_kneaddata.repeats.removed.2.fastq"
+	output:
+		"/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesKMA_AllReads/{sample}.res",
+		"/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesKMA_AllReads/{sample}.mapstat"
+	log:
+		"/data/scratch/projects/punim0586/kat/101BPIndonesianSamples/logs/KMA/{sample}.log"
+	shell:
+		"/data/cephfs/punim0586/kbobowik/CCmetagen/kma/kma "
+		"-ipe {input.f1} {input.f2} " # -ipe Inputfile(s), paired end
+		"-o /data/scratch/projects/punim0586/kat/101BPIndonesianSamplesKMA_AllReads/{wildcards.sample} " # -o output
+		"-ef " # -ef used to calculate abundance in reads per million (RPM)
+		"-t_db /data/scratch/projects/punim0586/kat/ncbi_nt_no_env_11jun2019 " # -t_db database;
+		"-t 12 -1t1 " # -t threads; -1t1 One read to one template, no splicing performed
+		"-mem_mode " # -mem_mode *.index and *.seq are not loaded into memory, which enables one to map against larger databases
+		"-apm f " # -apm Paired end method, “f” force paired reads to pair
+		"-and &> {log}" # -and Both mrs and p_value thresholds has to reached to in order to report a template hit
+
+rule CCMetagen_TE:
+	input:
+		resultFile="/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesKMA_AllReads/{sample}.res",
+		mapstatFile="/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesKMA_AllReads/{sample}.mapstat"
+	output:
+		"/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesCCMetagen_AllReads_Counts/{sample}.csv",
+		"/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesCCMetagen_AllReads_Counts/{sample}.html",
+		"/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesCCMetagen_AllReads_Counts/{sample}.tsv"
+	log:
+		"/data/scratch/projects/punim0586/kat/101BPIndonesianSamples/logs/CCMetagen/{sample}.log"
+	conda:
+		"envs/CCMetagen.yaml"
+	shell:
+		"(export PATH='/home/kbobowik/.conda/envs/py38/bin:/usr/local/easybuild/software/Miniconda3/4.6.14/condabin:/usr/local/showq/0.15/bin:/usr/local/slurm/latest/bin:/usr/lib64/qt-3.3/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/opt/ibutils/bin:/opt/puppetlabs/bin:/opt/dell/srvadmin/bin:/data/cephfs/punim0586/kbobowik/CCmetagen/CCMetagen:/scratch/punim0586/kat/dfam/hmmer-3.3/src:/home/kbobowik/edirect:/home/kbobowik/.local/bin:/home/kbobowik/bin:/data/cephfs/punim0586/kbobowik/CCmetagen/CCMetagen:/scratch/punim0586/kat/dfam/hmmer-3.3/src:/home/kbobowik/edirect:/home/kbobowik/.local/bin:/home/kbobowik/bin'; "
+		"python /data/cephfs/punim0586/kbobowik/CCmetagen/CCMetagen/CCMetagen.py -i {input.resultFile} "
+		"-o /data/scratch/projects/punim0586/kat/101BPIndonesianSamplesCCMetagen_AllReads_Counts/{wildcards.sample} "#		# get only accession number and taconomic ranks
+		# get only accession number and taconomic ranks
+		"--depth_unit rpm " # depth is in reads per million
+		"--mapstat {input.mapstatFile} " # if results are reported in reads per million, the mapstat file generated by KMA needs to be supplied
+		"--depth 1) &> {log}" # filter out matches with less than one read per million
