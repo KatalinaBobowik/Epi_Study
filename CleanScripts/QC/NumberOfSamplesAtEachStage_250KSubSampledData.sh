@@ -5,25 +5,14 @@ QCDir=/data/scratch/projects/punim0586/kat/QC
 arrayDir=/data/cephfs/punim0586/kbobowik/EpidemiologicalSurvey/scripts/array_files
 
 # raw data 
-rawDir=/data/scratch/projects/punim0586/kat/data/raw_data_copied
-for file in ${rawDir}/*_1.fastq.gz; do
-	sample=`basename $file _1.fastq.gz`
-	echo "echo $sample \`expr \$(zcat $file|wc -l)/4|bc\` >> ${QCDir}/totalRawReads.txt"
-done > ${arrayDir}/rawReadsCounter.txt
-
-
-------------
-
-# raw data 
 MaliDir=/scratch/punim0586/kat/ControlSamples_Mali
 TBDir=/scratch/punim0586/kat/ControlSamples_TB
-for file in ${rawDir}/*_1.fastq.gz; do
+for file in `find $MaliDir $TBDir -name '*_1.fastq.gz'`; do
 	sample=`basename $file _1.fastq.gz`
 	echo "echo $sample \`expr \$(zcat $file|wc -l)/4|bc\` >> ${QCDir}/totalRawReads.txt"
-done > ${arrayDir}/rawReadsCounter.txt
 
+done > ${arrayDir}/rawReadsCounter_ControlsMaliUK.txt
 
-----------
 
 # Trimmed reads with adapters removed
 trimDir=/data/scratch/projects/punim0586/kat/101BPIndonesianSamplesTrimmed
@@ -63,3 +52,4 @@ sort -k1 ${QCDir}/noRepeats.txt > ${QCDir}/noRepeats_Sorted.txt
 paste ${QCDir}/totalRawReads_Sorted.txt ${QCDir}/trimmedNoAdapterIndo_Sorted.txt ${QCDir}/unmappedReadTotal_Sorted.txt ${QCDir}/noHumanReads_Sorted.txt ${QCDir}/noRepeats_Sorted.txt > ${QCDir}/allReads_AllStages.txt
 cat allReads_AllStages.txt | awk -F" " '{print $1, $2, $4, $6, $8, $10}' > allReads_AllStages_Ordered.txt
 
+cat * | sort -k1

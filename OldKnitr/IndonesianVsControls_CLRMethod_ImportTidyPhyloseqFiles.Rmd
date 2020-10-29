@@ -1,0 +1,849 @@
+---
+title: Indonesian Samples Vs. Controls
+author: katalinabobowik
+date: '2020-09-13'
+
+---
+
+Last updated: `r Sys.Date()`
+
+# Introduction
+
+This part of the study will analyse differences between our Indonesian samples and compare them with healthy controls. From my previous analysis of healthy Indonesians, I found that Plasmodium, Flavivirus, and Bacteria make up the majority of the taxa found within unmapped reads. However, I want to see how different this is to populations in more sterile environments. 
+
+The aim of this analysis is therefore to test whether the pathogen signature identified in our Indonesian samples is unique. We will test this by looking at the sample grouping by PCA, hierarchical clustering, relative abundance of taxa, alpha and beta diversity estimates, and differential abundance testing.
+
+The Indonesian data in this study were generated from the previously-published study by [Natri et al](https://journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1008749). Briefly, 101-bp, paired-end data were generated on an Illumina HiSeq 2500 to an average depth of 30 million read pairs per individualon.
+
+it was run through KMA, CCMetage, etc... (look at scripts, x, y, z, for sample processing)
+
+The control samples were taken from Loohuis et al. 
+
+These two other studies are... 
+
+# Loading packages and colour setup
+
+The code below will install the packages needed to run the analyses. We're also setting
+up our directories to run locally, but I've provided all of the paths so they 
+can be easily modified if they need to be run on the server.
+
+```{r setup, include=TRUE, message = FALSE}
+require(ggplot2)
+require(RColorBrewer)
+library(dplyr)
+library(plyr)
+library(reshape2)
+library(ggpubr)
+library(metacoder)
+library(tidyverse)             
+library(phyloseq)                   
+library(DESeq2)                       
+library(microbiome)               
+library(vegan)                         
+library(picante)                     
+library(ALDEx2)                      
+library(metagenomeSeq)          
+library(HMP)                             
+library(dendextend)               
+library(selbal)                       
+library(rms)
+library(breakaway)        
+library(microbiomeutilities)
+library(mixOmics)
+library(SRS)
+library(ggrepel)
+
+# set up directories
+AllReadsdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/All_Reads/"
+Indo250Kdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/Indo_250K/"
+outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/ControlSampleComparison/"
+refdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/ReferenceFiles/EpiStudy/"
+filteringDir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/ControlSampleComparison/"
+```
+'We'll also set up our colour schemes. 
+
+```{r, include=TRUE, message = FALSE}
+# set ggplot colour theme to white
+theme_set(theme_bw())
+
+# Set up colour scheme
+IndonesiaCol="#4477AA"
+MaliCol="#66CCEE"
+NetherlandsCol="#EE6677"
+USACol="#AA3377"
+
+```
+
+# Reading in the Indonesian data
+
+Many microbiome studies use the package phyloseq to analyse data due to its comprehensive packages. The data structures in Phyloseq (taxa data, otu data, and sample data) are also contained in a single object, which makes it easy to keep everything together.
+
+First, we'll read in our Indonesian single-ended count data and separate taxa information from read abundance information. We'll then assign sample information to the data (namely, population and sample IDs) so that we can compare it to the control datasets.
+
+```{r, message = FALSE}
+
+AllREadsSE_Indo_Counts <- read.csv(paste0(refdir,"Counts_Indo_AllReads_SE.csv"),check.names=FALSE)
+
+# Separate species' abundances and taxonomy columns
+taxa_raw <- as.matrix(AllREadsSE_Indo_Counts[,c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species")])
+abund_raw <- as.matrix(AllREadsSE_Indo_Counts[,-which(colnames(AllREadsSE_Indo_Counts) %in% c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species"))])
+
+# convert to Phyloseq object
+tax = tax_table(taxa_raw)
+taxa = otu_table(abund_raw, taxa_are_rows = TRUE)
+AllREadsSE_Indo_Counts_physeq = phyloseq(taxa, tax)
+
+# add in sample information, starting with Island
+samplenames <- colnames(otu_table(AllREadsSE_Indo_Counts_physeq))
+pop <- rep("Indonesia",ncol(otu_table(AllREadsSE_Indo_Counts_physeq)))
+
+# make this into a df and add to the Phloseq object
+samples_df=data.frame(SampleName=colnames(otu_table(AllREadsSE_Indo_Counts_physeq)), SamplePop=pop)
+samples = sample_data(samples_df)
+rownames(samples)=samples$SampleName
+sample_data(AllREadsSE_Indo_Counts_physeq) <- samples
+
+# get information on phyloseq objects
+AllREadsSE_Indo_Counts_physeq
+
+```
+
+For the Indonesian samples, we can see that we have a phyloseq object consisting of 123 samples, 6 of which are replicates. We'll take the replicate with the highest library depth and then remove the rest.
+
+```{r, message = FALSE}
+# get replicates
+trimmed_samplenames = gsub("Batch1",'',samplenames) %>% gsub("Batch2",'', .) %>% gsub("Batch3",'', .)
+trimmed_samplenames = sub("([A-Z]{3})([0-9]{3})", "\\1-\\2", trimmed_samplenames)
+replicate_index = which(duplicated(trimmed_samplenames) | duplicated(trimmed_samplenames, fromLast = TRUE))
+replicates = samplenames[replicate_index]
+
+# add sequencing depth information to the Physeq object in order to filter replicates by seqDepth
+SeqDepth = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth = SeqDepth
+
+# find out which replicates have the highest sequencing depth
+sample_data(AllREadsSE_Indo_Counts_physeq)[replicates,]
+replicateDF=as.data.frame(sample_data(AllREadsSE_Indo_Counts_physeq)[replicates,])
+replicateDF$SampleName = sub("([A-Z]{3})([0-9]{3})", "\\1-\\2", replicateDF$SampleName)
+replicateDF$SampleName = gsub("Batch1",'',replicateDF$SampleName) %>% gsub("Batch2",'', .) %>% gsub("Batch3",'', .)
+replicateDF=replicateDF[with(replicateDF, order(-SeqDepth)), ]
+removeReplicates=rownames(replicateDF[which(duplicated(replicateDF$SampleName)),])
+keepReplicates=rownames(sample_data(AllREadsSE_Indo_Counts_physeq))[-which(rownames(sample_data(AllREadsSE_Indo_Counts_physeq)) %in% removeReplicates)]
+
+# prune these out
+AllREadsSE_Indo_Counts_physeq=prune_samples(keepReplicates,AllREadsSE_Indo_Counts_physeq)
+
+# remove taxa with only 0's in the phyloseq object
+any(taxa_sums(AllREadsSE_Indo_Counts_physeq) == 0)
+AllREadsSE_Indo_Counts_physeq=prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq) > 0, AllREadsSE_Indo_Counts_physeq)
+
+# add sequencing depth information before filtering
+SeqDepth_Prefilter = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_Prefilter = SeqDepth_Prefilter
+
+AllREadsSE_Indo_Counts_physeq
+```
+We now have a phyloseq object of 117 samples and 2,755 taxa.
+
+# Reading in the control datasets
+
+The first control dataset we'll read in is from a study conducted by [Tran et al](https://www.nature.com/articles/srep31291#Tab1), conducted in 2016. This study looked at transcriptomic differences between individuals pre and post (natural) infection with P. falciparum. We'll only be using the healthy samples pre-infection, of which there are 54.
+
+One of the reasons why this dataset is interesting is becase it comes from individuals living in areas that have a high pathogen load, similar to our studies. Therefore, we have a positive control to compare to our samples.
+
+The samples in the Malian study are 100-bp, paired end reads sequenced on an Illumina HiSeq 2000 and depleted of rRNA and globin RNA before amplification using the ScriptSeq Complete Gold Kit (Illumina). 
+
+Let's read in the data, make it into a PhyloSeq object, and add in our sample information. 
+
+## Malian Samples
+
+```{r, message = FALSE}
+Mali_Counts <- read.csv(paste0(refdir,"MaliControls_Counts_NoFilter.csv"),check.names=FALSE)
+
+# Separate species' abundances and taxonomy columns
+taxa_raw <- as.matrix(Mali_Counts[,c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species")])
+abund_raw <- as.matrix(Mali_Counts[,-which(colnames(Mali_Counts) %in% c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species"))])
+# convert to Phyloseq object
+tax = tax_table(taxa_raw)
+taxa = otu_table(abund_raw, taxa_are_rows = TRUE)
+Mali_Counts_physeq = phyloseq(taxa, tax)
+
+# add in sample information, i.e., the sample names and population they're from
+samplenames <- colnames(otu_table(Mali_Counts_physeq))
+pop <- rep("Mali",ncol(otu_table(Mali_Counts_physeq)))
+
+# make this into a df and add to the Phloseq object
+samples_df=data.frame(SampleName=colnames(otu_table(Mali_Counts_physeq)), SamplePop=pop)
+samples = sample_data(samples_df)
+rownames(samples)=samples$SampleName
+sample_data(Mali_Counts_physeq) <- samples
+
+# add sequencing depth information before filtering
+SeqDepth_Prefilter = colSums(otu_table(Mali_Counts_physeq))
+sample_data(Mali_Counts_physeq)$SeqDepth_Prefilter = SeqDepth_Prefilter
+
+# summarise data
+Mali_Counts_physeq
+```
+
+We now have a phyloseq object of 51 samples by 4058 taxa.
+
+## Dutch samples
+
+The next set of control samples is from a study conducted by [Loohuis et al](https://www.nature.com/articles/s41398-018-0107-9) in 2018. The data is 100-bp and single-ended, sequenced on an Illumina HiSeq 2000. Whole blood was globin-depleted using the Illumina Ribo-Zero Gold kit. 
+
+The authors in this study were interested in comparing the whole blood metatranscriptome between healthy controls and individuals with mental illness, however we will only be utilising the 49 healthy control samples from the study.
+
+As with the other studies, we'll first convert the data to a phyloseq object.
+
+```{r, message = FALSE}
+
+control_100K_Counts <- read.csv(paste0(refdir,"Controls_NoFiltering_Counts.csv"),check.names=FALSE)
+
+# Separate species' abundances and taxonomy columns
+taxa_raw <- as.matrix(control_100K_Counts[,c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species")])
+abund_raw <- as.matrix(control_100K_Counts[,-which(colnames(control_100K_Counts) %in% c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species"))])
+# convert to Phyloseq object
+tax = tax_table(taxa_raw)
+taxa = otu_table(abund_raw, taxa_are_rows = TRUE)
+control_100K_Counts_physeq = phyloseq(taxa, tax)
+
+# get information on phyloseq object
+control_100K_Counts_physeq
+```
+
+As mentioned previously, the control dataset has sample information from individuals with mental illness, as well as controls. Since we only want to compare our healthy Indonesian individuals to healthy controls, we'll remove all samples with mental illlness from the phyloseq object.
+
+```{r, message = FALSE}
+# text file made from script 'GetDiseaseStatus_ControlSamples.sh'
+diseaseStatus=read.table(paste0(refdir,"ControlSamples_DiseaseStatus.txt"))
+colnames(diseaseStatus)=c("Samples","diseaseStatus")
+controlSamples=as.character(diseaseStatus[grep("CSF", diseaseStatus$diseaseStatus),"Samples"])
+
+# prune out samples we don't want
+control_100K_Counts_physeq=prune_samples(controlSamples,control_100K_Counts_physeq)
+
+# add in sample information, i.e., the sample names and population they're from
+samplenames <- colnames(otu_table(control_100K_Counts_physeq))
+pop <- rep("Netherlands",ncol(otu_table(control_100K_Counts_physeq)))
+
+# make this into a df and add to the Phloseq object
+samples_df=data.frame(SampleName=colnames(otu_table(control_100K_Counts_physeq)), SamplePop=pop)
+samples = sample_data(samples_df)
+rownames(samples)=samples$SampleName
+sample_data(control_100K_Counts_physeq) <- samples
+
+# remove taxa with only 0's in the phyloseq object
+any(taxa_sums(control_100K_Counts_physeq) == 0)
+control_100K_Counts_physeq=prune_taxa(taxa_sums(control_100K_Counts_physeq) > 0, control_100K_Counts_physeq)
+
+# add sequencing depth information before filtering
+SeqDepth_Prefilter = colSums(otu_table(control_100K_Counts_physeq))
+sample_data(control_100K_Counts_physeq)$SeqDepth_Prefilter = SeqDepth_Prefilter
+
+# get phyloseq summary information
+control_100K_Counts_physeq
+
+```
+We now have a phyloseq object of 49 samples with 469 taxa.
+
+## American samples
+
+Our final dataset is from an unpublished study under review, collected from GEO study [GSE152255](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE152255).
+
+The individuals in this study were all healthy adults taking part in a vaccine challenge trial for dengue serotype 2. All the samples were from healthy individuals prior to the vaccine challenge trial and were collected in Vermont and Maryland in the USA. 
+
+In total, there are 11 samples from both white (n=6) and African American (n=5) individuals. The data is single-ended, 100-bp data sequenced on an Illumina HiSeq 2000 and libraries were constructed using the NuGEN Ovation Universal RNA reagent (Product 338) with ribosomal RNA and globin depletion (NuGEN-Tecan, Redwood City, Ca).
+
+Let's read in the last dataset!
+
+```{r, message = FALSE}
+Americans_Counts <- read.csv(paste0(refdir,"DengueSamples_Counts_NoFiltering.csv"),check.names=FALSE)
+
+# Separate species' abundances and taxonomy columns
+taxa_raw <- as.matrix(Americans_Counts[,c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species")])
+abund_raw <- as.matrix(Americans_Counts[,-which(colnames(Americans_Counts) %in% c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species"))])
+# convert to Phyloseq object
+tax = tax_table(taxa_raw)
+taxa = otu_table(abund_raw, taxa_are_rows = TRUE)
+Americans_Counts_physeq = phyloseq(taxa, tax)
+
+# add in sample information, i.e., the sample names and population they're from
+samplenames <- colnames(otu_table(Americans_Counts_physeq))
+pop <- rep("USA",ncol(otu_table(Americans_Counts_physeq)))
+
+# make this into a df and add to the Phloseq object
+samples_df=data.frame(SampleName=colnames(otu_table(Americans_Counts_physeq)), SamplePop=pop)
+samples = sample_data(samples_df)
+rownames(samples)=samples$SampleName
+sample_data(Americans_Counts_physeq) <- samples
+
+# add sequencing depth information before filtering
+SeqDepth_Prefilter = colSums(otu_table(Americans_Counts_physeq))
+sample_data(Americans_Counts_physeq)$SeqDepth_Prefilter = SeqDepth_Prefilter
+
+# summarise data
+Americans_Counts_physeq
+
+```
+We have a phyloseq object of 11 samples and 390 taxa.
+
+We'll also be documenting how many reads we have at each step of the pipeline, so let's add that to a temporary dataframe.
+
+# Data processing
+
+## Removing singletons from the data
+
+The easiest way to get rid of some error in your data is to throw out any count information below some threshold. Oddly, in microbiomics, there's no set thresholding for this. In the end, it's really a compromise between accuracy and keeping rare taxa. What *is* decided is that filtering out at least singletons is standard, since these are regarded as sources of error or contamination. Some resources I found that were helpful on this can be found [here](http://drive5.com/usearch/manual/singletons.html) and [here](https://forum.qiime2.org/t/do-you-guys-still-remove-singletons-or-doubletons-these-days/7138/2).  
+
+In most of the datasets, we can see that there's a high number of low counts within the data.
+
+```{r, message = FALSE}
+
+temp_merged_phylo_counts=merge_phyloseq(AllREadsSE_Indo_Counts_physeq, Mali_Counts_physeq, control_100K_Counts_physeq, Americans_Counts_physeq)
+
+# histogram of data
+ggplot(meta(temp_merged_phylo_counts)) + geom_histogram(aes(x = SeqDepth_Prefilter), alpha= 0.6, bins=100) + facet_wrap(~SamplePop)
+
+```
+With a higher sequencing depth, you can afford to play around with thresholding, however for my library size, the sequencing depth is varaible and quite low in some samples. Therefore, pushing this threshold up too high will eliminate rare taxa, especially given that we didn't have a high library size to begin with.
+
+Although our starting library size is small, let's explore the data a bit by looking at the effect of removing singletons.
+
+A great tool to do this is raraefaction curves. Rarefaction curves are commonly used in microbiomics to estimate 1) species richness and 2) determine how extensively a library was sampled. For the first point, it's nearly impossible to capture all species within a community, and therefore this allows for a way to estimate the total species we would expect to find by extrapolating the curve within the rarefaction plot. A rarefaction curve will (if sampled to a high enough depth) asymptote, and this point is regarded as the estimate of the total number of species within that community.
+
+For the second point, we can also use the asymptote of the curve to see how extensively we sampled. If the curve has not started to flatten off, we have not captured everything. 
+
+Lets see how rarefaction looks like when we remove singletons and when we remove 5 counts.
+
+```{r, fig.show="hold", out.width="50%", message=FALSE}
+# Separate species' abundances and taxonomy columns
+rarecurve_counts <- otu_table(temp_merged_phylo_counts)
+col <- c(rep(IndonesiaCol,sum(sample_data(temp_merged_phylo_counts)[,"SamplePop"]=="Indonesia")),rep(MaliCol,sum(sample_data(temp_merged_phylo_counts)[,"SamplePop"]=="Mali")),rep(NetherlandsCol,sum(sample_data(temp_merged_phylo_counts)[,"SamplePop"]=="Netherlands")), rep(USACol,sum(sample_data(temp_merged_phylo_counts)[,"SamplePop"]=="USA")))
+# Try with different filtering thresholds:
+for (i in c(1,5)){
+ 	rarecurve_counts[rarecurve_counts<=i]<-0
+	rarecurve(t(otu_table(rarecurve_counts, taxa_are_rows = TRUE)), step=20, col=col,label=F, xlab="Counts",ylab="Number Species",main=paste("Removing Reads",i,"And Below",sep=" "),xlim=c(0,50000))
+}
+```
+
+From the rarefaction curves, we can notice a few things. For one, the library size needed to capture all of the taxa is quite variable between studies. For example, the Dutch study (in pink) is quite small, and from the looks of it, not very diverse. Therefore, it plateaus at around 1,000 reads (i.e., only a library depth of 1,000 is needed to capture the full species diversity). In contrast to this, the Malian study (light blue) is the most diverse, with over 20,000 reads necessary to capture the full diversity. 
+
+We might also notice that when removing we remove reads 5 and below (shown on the right hand side), the curve asymptotes much sooner. This is because you need more reads to detect rare species, and therefore removing reads 5 and below eliminates some of these rare species.
+
+As mentioned before, because our starting read depth is small, we will stick with removing singletons. We will also make a copy of the unfiltered data for downstream use. 
+
+```{r, message = FALSE}
+# Filter out singletons
+otu_table(AllREadsSE_Indo_Counts_physeq)[otu_table(AllREadsSE_Indo_Counts_physeq)<=1]<-0
+AllREadsSE_Indo_Counts_physeq <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq) > 0, AllREadsSE_Indo_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noSingletons = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_noSingletons = SeqDepth_noSingletons
+
+otu_table(Mali_Counts_physeq)[otu_table(Mali_Counts_physeq)<=1]<-0
+Mali_Counts_physeq <- prune_taxa(taxa_sums(Mali_Counts_physeq) > 0, Mali_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noSingletons = colSums(otu_table(Mali_Counts_physeq))
+sample_data(Mali_Counts_physeq)$SeqDepth_noSingletons = SeqDepth_noSingletons
+
+otu_table(control_100K_Counts_physeq)[otu_table(control_100K_Counts_physeq)<=1]<-0
+control_100K_Counts_physeq <- prune_taxa(taxa_sums(control_100K_Counts_physeq) > 0, control_100K_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noSingletons = colSums(otu_table(control_100K_Counts_physeq))
+sample_data(control_100K_Counts_physeq)$SeqDepth_noSingletons = SeqDepth_noSingletons
+
+otu_table(Americans_Counts_physeq)[otu_table(Americans_Counts_physeq)<=1]<-0
+Americans_Counts_physeq <- prune_taxa(taxa_sums(Americans_Counts_physeq) > 0, Americans_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noSingletons = colSums(otu_table(Americans_Counts_physeq))
+sample_data(Americans_Counts_physeq)$SeqDepth_noSingletons = SeqDepth_noSingletons
+```
+
+## Removing humans and plants
+
+'From the script X, we saw that human reads and viridiplantae are not of interest because of X. We'll filter these out. 
+
+```{r, message = FALSE}
+
+# Filter out Viridiplantae 
+AllREadsSE_Indo_Counts_physeq <- subset_taxa(AllREadsSE_Indo_Counts_physeq, (Kingdom!="Viridiplantae"))
+AllREadsSE_Indo_Counts_physeq <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq) > 0, AllREadsSE_Indo_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noViridiplantae = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_noViridiplantae = SeqDepth_noViridiplantae
+
+Mali_Counts_physeq <- subset_taxa(Mali_Counts_physeq, (Kingdom!="Viridiplantae"))
+Mali_Counts_physeq <- prune_taxa(taxa_sums(Mali_Counts_physeq) > 0, Mali_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noViridiplantae = colSums(otu_table(Mali_Counts_physeq))
+sample_data(Mali_Counts_physeq)$SeqDepth_noViridiplantae = SeqDepth_noViridiplantae
+
+control_100K_Counts_physeq <- subset_taxa(control_100K_Counts_physeq, (Kingdom!="Viridiplantae"))
+control_100K_Counts_physeq <- prune_taxa(taxa_sums(control_100K_Counts_physeq) > 0, control_100K_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noViridiplantae = colSums(otu_table(control_100K_Counts_physeq))
+sample_data(control_100K_Counts_physeq)$SeqDepth_noViridiplantae = SeqDepth_noViridiplantae
+
+Americans_Counts_physeq <- subset_taxa(Americans_Counts_physeq, (Kingdom!="Viridiplantae"))
+Americans_Counts_physeq <- prune_taxa(taxa_sums(Americans_Counts_physeq) > 0, Americans_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noViridiplantae = colSums(otu_table(Americans_Counts_physeq))
+sample_data(Americans_Counts_physeq)$SeqDepth_noViridiplantae = SeqDepth_noViridiplantae
+
+# Filter out Metazoa
+AllREadsSE_Indo_Counts_physeq <- subset_taxa(AllREadsSE_Indo_Counts_physeq, (Kingdom!="Metazoa"))
+AllREadsSE_Indo_Counts_physeq <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq) > 0, AllREadsSE_Indo_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noMetazoa = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_noMetazoa = SeqDepth_noMetazoa
+
+Mali_Counts_physeq <- subset_taxa(Mali_Counts_physeq, (Kingdom!="Metazoa"))
+Mali_Counts_physeq <- prune_taxa(taxa_sums(Mali_Counts_physeq) > 0, Mali_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noMetazoa = colSums(otu_table(Mali_Counts_physeq))
+sample_data(Mali_Counts_physeq)$SeqDepth_noMetazoa = SeqDepth_noMetazoa
+
+control_100K_Counts_physeq <- subset_taxa(control_100K_Counts_physeq, (Kingdom!="Metazoa"))
+control_100K_Counts_physeq <- prune_taxa(taxa_sums(control_100K_Counts_physeq) > 0, control_100K_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noMetazoa = colSums(otu_table(control_100K_Counts_physeq))
+sample_data(control_100K_Counts_physeq)$SeqDepth_noMetazoa = SeqDepth_noMetazoa
+
+Americans_Counts_physeq <- subset_taxa(Americans_Counts_physeq, (Kingdom!="Metazoa"))
+Americans_Counts_physeq <- prune_taxa(taxa_sums(Americans_Counts_physeq) > 0, Americans_Counts_physeq)
+# add sequencing depth information before filtering
+SeqDepth_noMetazoa = colSums(otu_table(Americans_Counts_physeq))
+sample_data(Americans_Counts_physeq)$SeqDepth_noMetazoa = SeqDepth_noMetazoa
+
+```
+## Summarising the data
+
+```{r, message = FALSE}
+temp_merged_phylo_counts=merge_phyloseq(AllREadsSE_Indo_Counts_physeq, Mali_Counts_physeq, control_100K_Counts_physeq, Americans_Counts_physeq)
+FilteringSummary = sample_data(temp_merged_phylo_counts)[,c("SamplePop","SeqDepth_Prefilter","SeqDepth_noSingletons","SeqDepth_noViridiplantae","SeqDepth_noMetazoa")]
+
+# write.table(filtering_summary,file=paste0(outputdir,"Filtering_Summary.txt"),sep="\t")
+melted_FilteringSummary = melt(FilteringSummary)
+ggplot(melted_FilteringSummary, aes(x=variable, y=log(value), fill=SamplePop)) +
+  geom_violin() + theme_bw() + ylab("Spearman pairwise correlation") +
+  theme(axis.title.x=element_blank()) + scale_fill_manual(values = c(IndonesiaCol,MaliCol,NetherlandsCol,USACol))
+
+```
+
+# Merging the data
+
+The next step of the analysis is to merge the Indonesian and control datasets together. Phyloseq makes this really easy by simply using the merge_phyloseq() function. We'll then get some summary stats on the data.
+
+We'll also save the sequencing depth for each sample library at each stage of the pipeline so that we can see how filtering affects our data. 
+
+```{r, message = FALSE}
+# # Add in new column, Superkimgdom + family, to all phyloseq objects and save data
+# AllREadsSE_Indo_Counts_physeq <- tax_glom(AllREadsSE_Indo_Counts_physeq, "Family")
+# any(taxa_sums(AllREadsSE_Indo_Counts_physeq) == 0)
+# taxa_names(AllREadsSE_Indo_Counts_physeq) <- paste(tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Kingdom"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Phylum"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Class"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Order"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Family"], sep="_")
+# Mali_Counts_physeq <- tax_glom(Mali_Counts_physeq, "Family")
+# any(taxa_sums(Mali_Counts_physeq) == 0)
+# taxa_names(Mali_Counts_physeq) <- paste(tax_table(Mali_Counts_physeq)[,"Superkingdom"], tax_table(Mali_Counts_physeq)[,"Kingdom"], tax_table(Mali_Counts_physeq)[,"Phylum"], tax_table(Mali_Counts_physeq)[,"Class"], tax_table(Mali_Counts_physeq)[,"Order"], tax_table(Mali_Counts_physeq)[,"Family"], sep="_")
+# control_100K_Counts_physeq <- tax_glom(control_100K_Counts_physeq, "Family")
+# any(taxa_sums(control_100K_Counts_physeq) == 0)
+# taxa_names(control_100K_Counts_physeq) <- paste(tax_table(control_100K_Counts_physeq)[,"Superkingdom"], tax_table(control_100K_Counts_physeq)[,"Kingdom"], tax_table(control_100K_Counts_physeq)[,"Phylum"], tax_table(control_100K_Counts_physeq)[,"Class"], tax_table(control_100K_Counts_physeq)[,"Order"], tax_table(control_100K_Counts_physeq)[,"Family"], sep="_")
+# Americans_Counts_physeq <- tax_glom(Americans_Counts_physeq, "Family")
+# any(taxa_sums(Americans_Counts_physeq) == 0)
+# taxa_names(Americans_Counts_physeq) <- paste(tax_table(Americans_Counts_physeq)[,"Superkingdom"], tax_table(Americans_Counts_physeq)[,"Kingdom"], tax_table(Americans_Counts_physeq)[,"Phylum"], tax_table(Americans_Counts_physeq)[,"Class"], tax_table(Americans_Counts_physeq)[,"Order"], tax_table(Americans_Counts_physeq)[,"Family"], sep="_")
+
+# Add in new column, Superkimgdom + family, to all phyloseq objects and save data
+taxa_names(AllREadsSE_Indo_Counts_physeq) <- paste(tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Kingdom"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Phylum"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Class"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Order"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Family"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Genus"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Species"], sep="_")
+taxa_names(Mali_Counts_physeq) <- make.unique(paste(tax_table(Mali_Counts_physeq)[,"Superkingdom"], tax_table(Mali_Counts_physeq)[,"Kingdom"], tax_table(Mali_Counts_physeq)[,"Phylum"], tax_table(Mali_Counts_physeq)[,"Class"], tax_table(Mali_Counts_physeq)[,"Order"], tax_table(Mali_Counts_physeq)[,"Family"], tax_table(Mali_Counts_physeq)[,"Genus"], tax_table(Mali_Counts_physeq)[,"Species"], sep="_"))
+taxa_names(control_100K_Counts_physeq) <- make.unique(paste(tax_table(control_100K_Counts_physeq)[,"Superkingdom"], tax_table(control_100K_Counts_physeq)[,"Kingdom"], tax_table(control_100K_Counts_physeq)[,"Phylum"], tax_table(control_100K_Counts_physeq)[,"Class"], tax_table(control_100K_Counts_physeq)[,"Order"], tax_table(control_100K_Counts_physeq)[,"Family"], tax_table(control_100K_Counts_physeq)[,"Genus"], tax_table(control_100K_Counts_physeq)[,"Species"], sep="_"))
+taxa_names(Americans_Counts_physeq) <- paste(tax_table(Americans_Counts_physeq)[,"Superkingdom"], tax_table(Americans_Counts_physeq)[,"Kingdom"], tax_table(Americans_Counts_physeq)[,"Phylum"], tax_table(Americans_Counts_physeq)[,"Class"], tax_table(Americans_Counts_physeq)[,"Order"], tax_table(Americans_Counts_physeq)[,"Family"], tax_table(Americans_Counts_physeq)[,"Genus"], tax_table(Americans_Counts_physeq)[,"Species"], sep="_")
+
+merged_phylo_counts=merge_phyloseq(AllREadsSE_Indo_Counts_physeq, Mali_Counts_physeq, control_100K_Counts_physeq, Americans_Counts_physeq)
+any(taxa_sums(merged_phylo_counts) == 0)
+# FALSE
+
+# add sequencing depth information after agglomeration
+SeqDepth_Agglomerate = colSums(otu_table(merged_phylo_counts))
+sample_data(merged_phylo_counts)$SeqDepth_Agglomerate = SeqDepth_Agglomerate
+
+# make a barplot of library sizes
+ggplot(meta(merged_phylo_counts), aes(SampleName, SeqDepth_Agglomerate)) + geom_bar(stat = "identity", aes(fill = SamplePop)) + scale_fill_manual(values = c(IndonesiaCol,MaliCol,NetherlandsCol,USACol)) + rotate_x_text()
+```
+
+# Data normalisation
+
+The library sizes between samples and groups is highly variable, and therefore comparing the data to each other will result in biased results. 
+
+There are two ways of handling this: 
+1. Performing a transformation of the data
+2. Rarefying the data 
+
+## Centered log-ration transformation
+Taxa can be viewed by their relative abundance, however changes in the abundance of one taxon will result in changing the abundance of other taxa. 
+
+One of the ways to handle this is to transform the data using Centered Log Ratio (CLR)transformation. CLR data shows how OTUs behave relative to the per-sample average and is a commonly-used data transformation method in microbiomics. 
+
+Another cool thing about using CLR-transformed data is that you they are not affected by sequencing depth. This is an excerpt explaining from a paper by [Gloor et al](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5695134/) explaining that:
+
+"The clr-transformed values are scale-invariant; that is the same ratio is expected to be obtained in a sample with few read counts or an identical sample with many read counts, only the precision of the clr estimate is affected. This is elaborated in the “Probability” and “Log-ratio transformations” section in the Supplement, but the consequence is that count normalization is unnecessary and indeed, undesirable since information on precision is lost." 
+
+Unfortunately, one of the disadvantages to using CLR-transformed data is that it can't be used in diversity estimates, and it's also hard to visualise.
+
+Becasue CLR data is an informative measure of our data, I'll first explore sample grouping using this method.
+
+The first step to performing a CLR transformation on the data is to add an offset of 1 to the counts. This is necessary, since performing a log on 0 values is undefined. We'll then perform a log ratio transformation of the data using the mixOmics package.
+
+```{r, message = FALSE, warning = FALSE}
+offset_otu=otu_table(merged_phylo_counts)+1
+transform_counts=t(otu_table(offset_otu))
+data_clr <- logratio.transfo(as.matrix(transform_counts), logratio = 'CLR', offset = 0) 
+```
+
+### Sample grouping
+
+Now that we've transformed our data, we can make a PCA plot to see how each sample clusters. The current obect we have is a CLR-class object. You can plot this type of data object easily with miOmics, however I prefer the visualisation that phyloseq offers (you can't alter the PCA plots that much in mixOmics). So, we'll turn the clr object back into a phyloseq object and make an ordination plot of the data.
+
+'!Note: When Euclidean distances are used in PCoA plots, it is [equivalent to a PCA plot](http://ordination.okstate.edu/overview.htm). 
+
+```{r, message = FALSE}
+# Make a duplicated phyloseq object to use for plotting
+class(data_clr)="matrix"
+taxa = otu_table(t(data_clr), taxa_are_rows = TRUE)
+merged_phylo_counts_clr=merged_phylo_counts
+otu_table(merged_phylo_counts_clr)=taxa
+
+out.wuf.log <- ordinate(merged_phylo_counts_clr, method = "PCoA", distance = "euclidean")
+plot_ordination(merged_phylo_counts_clr, out.wuf.log, color="SamplePop", axes = 1:2, label="SampleName") + scale_colour_manual(values=c(IndonesiaCol,MaliCol,NetherlandsCol,USACol))
+plot_ordination(merged_phylo_counts_clr, out.wuf.log, color="SamplePop", axes = 2:3, label="SampleName") + scale_colour_manual(values=c(IndonesiaCol,MaliCol,NetherlandsCol,USACol))
+```
+We can see that the first principal component is separating the studies apart, with axis one separating Mali from the other three studies. In PC2, we can see the Mali and Indonesian samples come closer together, while the axis splits apart the Dutch study from the other three studies. 
+
+# Rarefying the data
+
+One of the most common ways to normalise data is through rarefying, or subsampling, the entire library to the lowest read depth in the dataset. Rarefaction is performed by drawing reads without replacement from each sample so that all samples have the same number of total counts. This process standardizes the library size across samples and is especially important for calulating diversity metrics, where read depth influences microbe diversity. 
+
+From what I've found, many people in the microbiomics community have very strong opinions about rarefying data. Some camps, such as QIIME, think that it's just fine, whereas others, such as the creators of Phyloseq, strongly advise against it. A seminal, and of the most well-referenced papers about the disadvantages of rarefying data, was published in 2014 by [McMurdie & Holmes](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003531). The arguments they have echo the main concerns seen within the 'anti-rarefy' camps: namely that rarefying data 1) decreases the ability to detect rare taxa and 2) can lead to unequally-rarefied data due to rare taxa being over or underrepresented in libraries normalised to a small size. 
+
+Although [some authors](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5335496/) argue that rarefaction is, in fact, a perfectly suitable option (particularly for small library sizes), I do think this is a valid point. 
+
+Recently, a package called [SRS](https://peerj.com/articles/9593/) (standing for Scaling with Ranked Subsampling) came out in R and it preserves OTU frequencies by 1) scaling counts by a constant factor where the sum of the scaled counts equals the minimum library size chosen by the user and 2) performing a ranked subsampling on the data.
+
+For this study, I chose Cmin (i.e., the number of counts to which all samples will be normalized) to be my minimum library size in the control dataset, which is 903 counts.
+
+SRS won't work if we have samples with a library size under this threshold, so let's remove all samples under 903, then perform SRS.
+
+```{r, message = FALSE, warning = FALSE}
+minControl=min(sample_sums(phyloseq::subset_samples(merged_phylo_counts, SamplePop == "Netherlands")))
+keep=names(which(sample_sums(merged_phylo_counts)>=minControl))
+pruned_data=prune_samples(keep, merged_phylo_counts)
+any(taxa_sums(pruned_data) == 0)
+# TRUE
+pruned_data <- prune_taxa(taxa_sums(pruned_data) > 0, pruned_data)
+any(taxa_sums(pruned_data) == 0)
+# FALSE
+pruned_data_df=as.data.frame(otu_table(pruned_data))
+SRS=SRS(pruned_data_df,minControl)
+rownames(SRS)=rownames(pruned_data_df)
+
+# transform back into phyloseq object
+taxa = otu_table(SRS, taxa_are_rows = TRUE)
+otu_table(pruned_data)=taxa
+any(taxa_sums(pruned_data) == 0)
+# TRUE
+pruned_data <- prune_taxa(taxa_sums(pruned_data) > 0, pruned_data)
+any(taxa_sums(pruned_data) == 0)
+# FALSE
+```
+
+'Now let's make sure the library sizes are the same and see how the OTU numbers look like between datasets.
+
+```{r, message = FALSE, warning = FALSE}
+
+SeqDepthPruned = sample_sums(pruned_data)
+sample_data(pruned_data)$SeqDepthPruned = SeqDepthPruned
+
+# barplot of library sizes
+ggplot(meta(pruned_data), aes(SampleName, SeqDepthPruned)) + geom_bar(stat = "identity", aes(fill = SamplePop)) +
+scale_fill_manual(values = c(IndonesiaCol,MaliCol,NetherlandsCol,USACol)) + rotate_x_text()
+
+# get barplot of total counts per individual
+nOTUs = colSums(otu_table(pruned_data)!=0)
+sample_data(pruned_data)$nOTUs = nOTUs
+
+# barplot of OTUs
+ggplot(meta(pruned_data), aes(SampleName, nOTUs)) + geom_bar(stat = "identity", aes(fill = SamplePop)) +
+scale_fill_manual(values = c(IndonesiaCol,MaliCol,NetherlandsCol,USACol)) + rotate_x_text()
+
+```
+
+# Hierarchical clustering
+
+blah blah hierarchical cluster...
+
+
+```{r, message = FALSE, fig.height = 7, fig.width = 14, fig.align = "center"}
+# ps_rel_abund = phyloseq::transform_sample_counts(pruned_data, function(x){x / sum(x)})
+ps_otu <- data.frame(phyloseq::otu_table(pruned_data))
+ps_otu <- t(ps_otu)
+bc_dist <- vegan::vegdist(ps_otu, method = "bray")
+ward <- as.dendrogram(hclust(bc_dist, method = "ward.D2"))
+#Provide color codes
+meta <- data.frame(phyloseq::sample_data(pruned_data))
+colorCode <- c(Indonesia = IndonesiaCol, `Mali` = MaliCol, `Netherlands` = NetherlandsCol, `USA` = USACol)
+labels_colors(ward) <- colorCode[meta$SamplePop][order.dendrogram(ward)]
+#Plot
+plot(ward)
+```
+
+# Relative frequency of taxa
+
+'Now that we've rarefied the data, we can look at the relative abundance of taxa for each sample. To visualise this, I want to show my taxa at the family level (see script X), however since there are nearly 200 unique taxa at the family level, this would be difficult to visualise with so many colours. Instead, we'll make a new taxa variable which combines Superkingdom information with Family-level information. This way, we can highlight colours by superkingdom (which isn't so visually overwhelming), and still preserve Family-level information.
+
+```{r, message = FALSE}
+# add a new column containing family names and superkingdom
+tax_table(pruned_data)[,"Superkingdom"] = paste(tax_table(pruned_data)[,"Superkingdom"], tax_table(pruned_data)[,"Family"], sep="_")
+tax_table(pruned_data)[,"Superkingdom"] <- gsub("Bacteria_$", "Bacteria_unclassified", tax_table(pruned_data)[,"Superkingdom"])
+tax_table(pruned_data)[,"Superkingdom"] <- gsub("Eukaryota_$", "Eukaryota_unclassified", tax_table(pruned_data)[,"Superkingdom"])
+tax_table(pruned_data)[,"Superkingdom"] <- gsub("Viruses_$", "Viruses_unclassified", tax_table(pruned_data)[,"Superkingdom"])
+```
+
+As pointed out, we have a lot of taxa at the family level (178 to be exact), and it would be hard to look over everything at once. Instead, we can focus on the top X number of taxa and highlight everything else in another colour.
+
+Here, I chose to highlight the top 20 taxa, since thats still representative while not being too visually exhausting.
+
+```{r, message = FALSE, fig.height = 10, fig.width = 15, fig.align = "center"}
+
+# For some reason, top is actually top + 1, so here it would be 20
+aggregated_phyloCounts <- aggregate_top_taxa(pruned_data, "Superkingdom", top = 20)
+# transform to relative counts
+relative_phyloCounts <- microbiome::transform(aggregated_phyloCounts, "compositional")
+# Remove weird extra family names added at the end of Superkingdom names
+tax_table(relative_phyloCounts)[,"Superkingdom"] <- paste(sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 1), sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 2), sep="_")
+# Change "Other_NA" to just "Other"
+tax_table(relative_phyloCounts)[,"Superkingdom"][grep("Other", taxa_names(relative_phyloCounts))] = "Other"
+
+# Plot
+p=plot_bar(relative_phyloCounts, fill = "Superkingdom")
+
+# set colour palette
+families=levels(p$data$Superkingdom)
+# get number of families in each kingdom
+table(sapply(strsplit(families, "[_.]"), `[`, 1))
+
+PaletteArchaea = colorRampPalette(c("grey"))(1)
+PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(15)
+PaletteEukaryote = colorRampPalette(c("#fd8d3c","#800026"))(2)
+PaletteOther = colorRampPalette(c("black"))(1)
+PaletteUnk = colorRampPalette(c("grey"))(1)
+PaletteVirus = colorRampPalette(c("#78c679","#006837"))(1)
+
+Merged_Palette <- c(PaletteArchaea,PaletteBacteria,PaletteEukaryote,PaletteOther,PaletteUnk,PaletteVirus)
+
+phyloseq::plot_bar(relative_phyloCounts, fill = "Superkingdom") +
+  geom_bar(aes(fill = Superkingdom), stat = "identity", position = "stack") +
+  labs(x = "", y = "Relative Abundance\n") +
+  facet_wrap(~ SamplePop, scales = "free") + scale_fill_manual(values=Merged_Palette) +
+  theme(panel.background = element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+```
+Shown at the phylum level
+
+```{r, message = FALSE, fig.height = 10, fig.width = 15, fig.align = "center"}
+
+# For some reason, top is actually top + 1, so here it would be 20
+aggregated_phyloCounts <- aggregate_top_taxa(pruned_data, "Phylum", top = 20)
+# transform to relative counts
+relative_phyloCounts <- microbiome::transform(aggregated_phyloCounts, "compositional")
+
+phyloseq::plot_bar(relative_phyloCounts, fill = "Phylum") +
+  geom_bar(aes(fill = Phylum), stat = "identity", position = "stack") +
+  labs(x = "", y = "Relative Abundance\n") +
+  facet_wrap(~ SamplePop, scales = "free") +
+  theme(panel.background = element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+```
+We can see that the Indonesian samples have a lot more variability in taxa than the Europeans. We can also see that the European data is dominated by bacteria, whereas the Indonesian samples have a high prortion of eukaryotes (dominated by Plasmodium) and viruses (dominated by Flaviviridae), as well as bacteria.
+
+'however, let's test this formally... 
+
+# Alpha diversity
+
+alpha diversity does these things... 
+
+```{r, message = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+#Generate a data.frame with adiv measures
+adiv <- data.frame(
+  "Observed" = phyloseq::estimate_richness(pruned_data, measures = "Observed"),
+  "Shannon" = phyloseq::estimate_richness(pruned_data, measures = "Shannon"),
+  "Simpson" = phyloseq::estimate_richness(pruned_data, measures = "Simpson"),
+  "Status" = phyloseq::sample_data(pruned_data)$SamplePop)
+head(adiv)
+
+adiv %>%
+  gather(key = metric, value = value, c("Observed", "Shannon","Simpson")) %>%
+  mutate(metric = factor(metric, levels = c("Observed", "Shannon","Simpson"))) %>%
+  ggplot(aes(x = Status, y = value)) +
+  geom_boxplot(outlier.color = NA) +
+  geom_jitter(aes(color = Status), height = 0, width = .2) +
+  labs(x = "", y = "") +
+  facet_wrap(~ metric, scales = "free") +
+  theme(legend.position="none") + scale_colour_manual(values=c(IndonesiaCol,MaliCol,NetherlandsCol,USACol))
+
+adiv %>%
+  group_by(Status) %>%
+  dplyr::summarise(median_observed = median(Observed),
+            median_shannon = median(Shannon),
+            median_simpson = median(Simpson))
+
+wilcox.test(Observed ~ Status, data = adiv, exact = FALSE, conf.int = TRUE)
+wilcox.test(Shannon ~ Status, data = adiv, conf.int = TRUE)              
+wilcox.test(Simpson ~ Status, data = adiv, conf.int = TRUE)              
+```
+# Beta Diversity
+
+Beta diversity does this...
+
+```{r, message = FALSE, fig.height = 10, fig.width = 10, fig.align = "center"}
+ps4.rel <- microbiome::transform(merged_phylo_counts, "clr")
+# RDA without constraints is PCA        
+bx.ord_pcoa_bray <- ordinate(ps4.rel, "RDA")
+
+# Make an ordination plot using bray's dissimilarity
+beta.ps1 <- plot_ordination(ps4.rel, 
+                            bx.ord_pcoa_bray, 
+                            color="SamplePop", 
+                            label = "SampleName") + 
+  geom_point(aes(), size= 4) + 
+  theme(plot.title = element_text(hjust = 0, size = 12))
+
+# add in an ellipse
+beta.ps1 + stat_ellipse() + theme_bw(base_size = 14) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_colour_manual(values=c(IndonesiaCol,MaliCol,NetherlandsCol,USACol))
+
+```
+# Differential abundance testing
+
+We can also visualise the difference in taxa between the two populations by looking at the difference in taxa between both populations..  
+
+```{r, message = FALSE, fig.height = 10, fig.width = 14, fig.align = "center"}
+aggregated_phyloCounts_phylum <- aggregate_top_taxa(merged_phylo_counts, "Family", top=12)
+# transform to relative counts
+relative_phyloCounts <- microbiome::transform(aggregated_phyloCounts_phylum, "clr")
+keepNames <- taxa_names(relative_phyloCounts)[!taxa_names(relative_phyloCounts) %in% "Other"]
+relative_phyloCounts <- prune_taxa(keepNames, relative_phyloCounts)
+
+phyloseq::psmelt(relative_phyloCounts) %>%
+ggplot(data = ., aes(x = SamplePop, y = Abundance)) +
+  geom_boxplot(outlier.shape  = NA) +
+  geom_jitter(aes(color = Family), height = 0, width = .2) +
+  labs(x = "", y = "Abundance\n") +
+  facet_wrap(~ Family, scales = "free")
+```
+
+You can also do a test on this to see if theyre diffrent.
+
+conduct a multivariate test for differences in the overall composition between groups of
+samples. This type of test can be implemented using the HMP package (Xdc.sevsample function) 
+described in the paper Hypothesis Testing and Power Calculations for Taxonomic-Based Human 
+Microbiome Data by La Rosa et. al.
+
+
+```{r, message = FALSE, fig.height = 10, fig.width = 14, fig.align = "center"}
+IndoVsDutch=subset_samples(merged_phylo_counts, SamplePop != "Mali")
+IndoVsDutch=subset_samples(IndoVsDutch, SamplePop != "USA")
+any(taxa_sums(IndoVsDutch) == 0)
+# TRUE
+IndoVsDutch <- prune_taxa(taxa_sums(IndoVsDutch) > 0, IndoVsDutch)
+taxa_names(IndoVsDutch)=make.unique(tax_table(IndoVsDutch)[,"Family"])
+aldex2_IndoVsDutch <- ALDEx2::aldex(data.frame(phyloseq::otu_table(IndoVsDutch)), phyloseq::sample_data(IndoVsDutch)$SamplePop, test="t", effect = TRUE)
+
+# create a table of all significant values, gathered by adjusted p-value
+sig_aldex2_IndoVsDutch <- aldex2_IndoVsDutch %>%
+  rownames_to_column(var = "OTU") %>%
+  filter(wi.eBH < 0.05) %>%
+  arrange(effect, wi.eBH) %>%
+  dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
+
+# For the volcano plot, we want to make anything under 0.05 a differnet colour than everything over 0.05
+aldex2_IndoVsDutch$threshold <- aldex2_IndoVsDutch$we.eBH <= 0.05
+aldex2_IndoVsDutch$threshold = as.numeric(aldex2_IndoVsDutch$threshold) + 1
+
+# adjust label names
+rownames(aldex2_IndoVsDutch) = gsub("unk_f.64","Rhodobacterales",rownames(aldex2_IndoVsDutch)) 
+labels= sapply(strsplit(rownames(aldex2_IndoVsDutch), "[..]"), `[`, 1) %>% gsub("unk_f","Fungi",.)
+# plot
+ggplot(aldex2_IndoVsDutch) +
+  geom_point(aes(x = effect, y = -log10(wi.eBH)), color = ifelse(aldex2_IndoVsDutch$wi.eBH <= 0.05, c("grey","#023858","#800026","grey","#78c679")[as.numeric(as.factor(tax_table(IndoVsDutch)[,"Superkingdom"]))],"black"), alpha = 0.65, size=5) +
+  # only label points with an adjusted p-value <= 0.001
+  geom_text_repel(aes(x = effect, y = -log10(wi.eBH), label = ifelse(wi.eBH <= 0.001, labels,""))) +
+  ggtitle("Indonesia Versus Netherlands") +
+  xlab("effect") + 
+  ylab("-log10 adjusted p-value") +
+  theme(legend.position = "none",
+        plot.title = element_text(size = rel(1.5), hjust = 0.5),
+        axis.title = element_text(size = rel(1.25)))
+
+# Differnetial abundance testing
+IndoVsUSA=subset_samples(merged_phylo_counts, SamplePop != "Mali")
+IndoVsUSA=subset_samples(IndoVsUSA, SamplePop != "Netherlands")
+any(taxa_sums(IndoVsUSA) == 0)
+# TRUE
+IndoVsUSA <- prune_taxa(taxa_sums(IndoVsUSA) > 0, IndoVsUSA)
+taxa_names(IndoVsUSA)=make.unique(tax_table(IndoVsUSA)[,"Family"])
+aldex2_IndoVsUSA <- ALDEx2::aldex(data.frame(phyloseq::otu_table(IndoVsUSA)), phyloseq::sample_data(IndoVsUSA)$SamplePop, test="t", effect = TRUE)
+sig_aldex2_IndoVsUSA <- aldex2_IndoVsUSA %>%
+  rownames_to_column(var = "OTU") %>%
+  filter(wi.eBH < 0.05) %>%
+  arrange(effect, wi.eBH) %>%
+  dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
+# set significance colours
+aldex2_IndoVsUSA$threshold <- aldex2_IndoVsUSA$we.eBH <= 0.05
+aldex2_IndoVsUSA$threshold = as.numeric(aldex2_IndoVsUSA$threshold) + 1
+
+# adjust label names
+labels = sapply(strsplit(rownames(aldex2_IndoVsUSA), "[..]"), `[`, 1) %>% gsub("unk_p","Fungi",.)
+# plot
+ggplot(aldex2_IndoVsUSA) +
+  geom_point(aes(x = effect, y = -log10(wi.eBH)), color = ifelse(aldex2_IndoVsUSA$wi.eBH <= 0.05, c("grey","#023858","#800026","grey","#78c679")[as.numeric(as.factor(tax_table(IndoVsUSA)[,"Superkingdom"]))],"black"), alpha = 0.65, size=5) +
+  #geom_text_repel(aes(x = effect, y = -log10(wi.eBH), label = rownames(aldex2_IndoVsDutch))) +
+  geom_text_repel(aes(x = effect, y = -log10(wi.eBH), label = ifelse(wi.eBH <= 0.001, labels,""))) +
+  ggtitle("Indonesia Versus USA") +
+  xlab("effect") + 
+  ylab("-log10 adjusted p-value") +
+  theme(legend.position = "none",
+        plot.title = element_text(size = rel(1.5), hjust = 0.5),
+        axis.title = element_text(size = rel(1.25)))
+
+IndoVsMali=subset_samples(merged_phylo_counts, SamplePop != "USA")
+IndoVsMali=subset_samples(IndoVsMali, SamplePop != "Netherlands")
+any(taxa_sums(IndoVsMali) == 0)
+# TRUE
+IndoVsMali <- prune_taxa(taxa_sums(IndoVsMali) > 0, IndoVsMali)
+taxa_names(IndoVsMali)=make.unique(tax_table(IndoVsMali)[,"Family"])
+aldex2_IndoVsMali <- ALDEx2::aldex(data.frame(phyloseq::otu_table(IndoVsMali)), phyloseq::sample_data(IndoVsMali)$SamplePop, test="t", effect = TRUE)
+sig_aldex2_IndoVsMali <- aldex2_IndoVsMali %>%
+  rownames_to_column(var = "OTU") %>%
+  filter(wi.eBH < 0.05) %>%
+  arrange(effect, wi.eBH) %>%
+  dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
+
+# set significance colours
+aldex2_IndoVsMali$threshold <- aldex2_IndoVsMali$we.eBH <= 0.05
+aldex2_IndoVsMali$threshold = as.numeric(aldex2_IndoVsMali$threshold) + 1
+
+# adjust label names
+labels = sapply(strsplit(rownames(aldex2_IndoVsMali), "[..]"), `[`, 1) %>% gsub("unk_f","Fungi",.)
+# plot
+ggplot(aldex2_IndoVsMali) +
+  geom_point(aes(x = effect, y = -log10(wi.eBH)), color = ifelse(aldex2_IndoVsMali$wi.eBH <= 0.05, c("grey","#023858","#800026","grey","#78c679")[as.numeric(as.factor(tax_table(IndoVsMali)[,"Superkingdom"]))],"black"), alpha = 0.65, size=5) +
+  geom_text_repel(aes(x = effect, y = -log10(wi.eBH), label = ifelse(wi.eBH <= 0.001, labels,""))) +
+  #geom_text_repel(aes(x = effect, y = -log10(wi.eBH), label = ifelse(wi.eBH <= 0.001, labels,""))) +
+  ggtitle("Indonesia Versus Mali") +
+  xlab("effect") + 
+  ylab("-log10 adjusted p-value") +
+  theme(legend.position = "none",
+        plot.title = element_text(size = rel(1.5), hjust = 0.5),
+        axis.title = element_text(size = rel(1.25)))
+
+```

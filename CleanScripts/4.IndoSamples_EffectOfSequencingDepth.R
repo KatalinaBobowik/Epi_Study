@@ -24,7 +24,7 @@ outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba
 ### All Reads ###
 #################
 
-# load in 250K Indonesian phyloseq object
+# load in Indonesian phyloseq object
 load(paste0(AllReadsdir,"allReads_Counts_physeq.Rda"))
 
 # First, decide on how many OTUs should be filtered out

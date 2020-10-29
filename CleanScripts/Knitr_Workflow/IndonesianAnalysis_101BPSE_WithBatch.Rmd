@@ -1,0 +1,855 @@
+---
+title: Indonesian Sample SE Analysis
+author: katalinabobowik
+date: '2020-10-16'
+
+---
+
+Last updated: `r Sys.Date()`
+
+# Introduction
+
+This part of the study will analyse differences unmapped reads in our Indonesian samples. 
+
+The aim of this analysis is therefore to see what pathogen can be identified in whole blood in our Indonesian samples and if it differs between islands. We will test this by looking at sample clustering, relative abundance of taxa, differential abundance testing, and diversity estimates. 
+
+## About the samples
+
+The Indonesian data in this study were generated from the previously-published study by [Natri et al](https://journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1008749). For this analysis, all RNAseq reads went through quality control using FastQC, then leading and trailing bases below a Phred quality score of 20 and adapters were removed. The remaining reads were then mapped to the human genome (Hg38) using STAR with a two-pass alignment.
+
+All unmapped reads were then put through further quality control using [KneadData](https://huttenhower.sph.harvard.edu/kneaddata/), where tandem repeats were removed with [TRF](https://tandem.bu.edu/trf/trf.html) and human reads were removed with [BMtagger](https://www.westgrid.ca/support/software/bmtagger). Finally, mapping and classification of reads was used with [CCMetagen](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02014-2), which relies upon [KMA](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-018-2336-6) for its mapping stage. 
+
+# Loading packages and colour setup
+
+The code below will install the packages needed to run the analysis. We're also setting
+up our directories to run locally, but I've provided all of the paths so they 
+can be easily modified if they need to be run on the server.
+
+```{r setup, include=TRUE, message = FALSE}
+require(ggplot2)
+require(RColorBrewer)
+library(dplyr)
+library(plyr)
+library(reshape2)
+library(ggpubr)
+library(metacoder)
+library(tidyverse)             
+library(phyloseq)                   
+library(DESeq2)                       
+library(microbiome)               
+library(vegan)                         
+library(picante)                     
+library(ALDEx2)                      
+library(metagenomeSeq)          
+library(HMP)                             
+library(dendextend)               
+library(selbal)                       
+library(rms)
+library(breakaway)        
+library(microbiomeutilities)
+library(mixOmics)
+library(SRS)
+library(ggrepel)
+library(DivNet)
+
+# set up directories
+refdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/ReferenceFiles/EpiStudy/"
+filteringDir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/ControlSampleComparison/"
+batchInfodir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/dataPreprocessing/"
+
+```
+We'll also set up our colour schemes. 
+
+```{r, include=TRUE, message = FALSE}
+# set ggplot colour theme to white
+theme_set(theme_bw())
+
+# Set up colour schemes
+KorowaiCol="#F21A00"
+MentawaiCol="#3B9AB2"
+SumbaCol="#EBCC2A"
+```
+
+# Reading in the Indonesian data
+
+Many microbiome studies use the package [phyloseq](https://github.com/joey711/phyloseq) to analyse data due to its comprehensive packages. The data structures in phyloseq (taxa data, otu data, and sample data) are also contained in a single object, which makes it easy to keep everything together.
+
+Let's read in our Indonesian single-ended, 101bp count data and convert taxa and read abundance information into a phyloseq object. We'll then assign sample information to the phyloseq object.
+
+```{r, message = FALSE}
+
+AllREadsSE_Indo_Counts <- read.csv(paste0(refdir,"Counts_Indo_AllReads_SE.csv"),check.names=FALSE)
+
+# Separate species' abundances and taxonomy columns
+taxa_raw <- as.matrix(AllREadsSE_Indo_Counts[,c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species")])
+abund_raw <- as.matrix(AllREadsSE_Indo_Counts[,-which(colnames(AllREadsSE_Indo_Counts) %in% c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species"))])
+
+# convert to Phyloseq object
+tax = tax_table(taxa_raw)
+taxa = otu_table(abund_raw, taxa_are_rows = TRUE)
+AllREadsSE_Indo_Counts_physeq = phyloseq(taxa, tax)
+
+# add in sample information, starting with Island
+samplenames <- colnames(otu_table(AllREadsSE_Indo_Counts_physeq))
+pop <- sapply(strsplit(samplenames, "[-.]"), `[`, 1)
+
+# add in batch information
+load(paste0(batchInfodir, "indoRNA.read_counts.TMM.filtered.Rda"))
+batch_df = data.frame(rownames(y$samples),y$samples$batch)
+colnames(batch_df)=c("Sample","Batch")
+batch_df=batch_df[order(batch_df$Sample),]
+batch=batch_df[,"Batch"]
+
+# make this into a df and add to the Phloseq object
+samples_df=data.frame(SampleName=colnames(otu_table(AllREadsSE_Indo_Counts_physeq)), SamplePop=pop, batch=batch)
+samples = sample_data(samples_df)
+rownames(samples)=samples$SampleName
+sample_data(AllREadsSE_Indo_Counts_physeq) <- samples
+
+# get information on phyloseq objects
+AllREadsSE_Indo_Counts_physeq
+
+```
+For the Indonesian samples, we can see that we have a phyloseq object consisting of 123 samples, 6 of which are replicates. We'll take the replicates with the highest library depth and then remove the rest.
+
+```{r, message = FALSE}
+# get replicates
+trimmed_samplenames = gsub("Batch1",'',samplenames) %>% gsub("Batch2",'', .) %>% gsub("Batch3",'', .)
+trimmed_samplenames = sub("([A-Z]{3})([0-9]{3})", "\\1-\\2", trimmed_samplenames)
+replicate_index = which(duplicated(trimmed_samplenames) | duplicated(trimmed_samplenames, fromLast = TRUE))
+replicates = samplenames[replicate_index]
+
+# add sequencing depth information to the Physeq object in order to filter replicates by seqDepth
+SeqDepth = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth = SeqDepth
+
+# find out which replicates have the highest sequencing depth
+sample_data(AllREadsSE_Indo_Counts_physeq)[replicates,]
+replicateDF=as.data.frame(sample_data(AllREadsSE_Indo_Counts_physeq)[replicates,])
+replicateDF$SampleName = sub("([A-Z]{3})([0-9]{3})", "\\1-\\2", replicateDF$SampleName)
+replicateDF$SampleName = gsub("Batch1",'',replicateDF$SampleName) %>% gsub("Batch2",'', .) %>% gsub("Batch3",'', .)
+replicateDF=replicateDF[with(replicateDF, order(-SeqDepth)), ]
+removeReplicates=rownames(replicateDF[which(duplicated(replicateDF$SampleName)),])
+keepReplicates=rownames(sample_data(AllREadsSE_Indo_Counts_physeq))[-which(rownames(sample_data(AllREadsSE_Indo_Counts_physeq)) %in% removeReplicates)]
+
+# prune these out
+AllREadsSE_Indo_Counts_physeq=prune_samples(keepReplicates,AllREadsSE_Indo_Counts_physeq)
+
+# remove taxa with only 0's in the phyloseq object
+any(taxa_sums(AllREadsSE_Indo_Counts_physeq) == 0)
+AllREadsSE_Indo_Counts_physeq=prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq) > 0, AllREadsSE_Indo_Counts_physeq)
+
+# add sequencing depth information
+SeqDepth_Prefilter = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_Prefilter = SeqDepth_Prefilter
+
+AllREadsSE_Indo_Counts_physeq
+```
+
+We now have a phyloseq object of 117 samples and 2,755 taxa.
+
+# Data processing
+
+## Removing singletons from the data
+
+The easiest way to get rid of some error in your data is to throw out any count information below some threshold. Oddly, in microbiomics, there's no set thresholding for this. In the end, it's really a compromise between accuracy and keeping rare taxa. What *is* decided is that filtering out at least singletons is standard, since these are regarded as sources of error or contamination. Some resources I found that were helpful on this can be found [here](http://drive5.com/usearch/manual/singletons.html) and [here](https://forum.qiime2.org/t/do-you-guys-still-remove-singletons-or-doubletons-these-days/7138/2).  
+
+We can see that there's a high number of low counts within the data.
+
+```{r, message = FALSE, fig.height = 7, fig.width = 12, fig.align = "center"}
+
+# histogram of data
+ggplot(meta(AllREadsSE_Indo_Counts_physeq)) + geom_histogram(aes(x = SeqDepth_Prefilter), alpha= 0.6, bins=100)
+
+```
+
+With a higher sequencing depth, you can afford to play around with thresholding, however for the Indonesian dataset, the sequencing depth is variable and quite low in some samples. Therefore, pushing this threshold up too high will eliminate rare taxa, especially given that we didn't have a high library size to begin with.
+
+Although our starting library size is small, let's explore the data a bit by looking at the effect of removing singletons.
+
+A great tool to do this is rarefaction curves. Rarefaction curves are commonly used in microbiomics to estimate 1) species richness and 2) determine how extensively a library was sampled. For the first point, it's nearly impossible to capture all species within a community, and therefore this allows for a way to estimate the total number of species we would expect to find by extrapolating the curve within the rarefaction plot. A rarefaction curve will (if sampled to a high enough depth) asymptote, and this point is regarded as the estimate of the total number of species within that community.
+
+For the second point, we can also use the asymptote of the curve to see how extensively we sampled. If the curve has not started to flatten off, we have not captured everything. 
+
+Lets see how rarefaction looks like when we remove singletons and when we remove counts 5 and below.
+
+```{r, fig.show="hold", out.width="50%", message=FALSE}
+# Separate species' abundances and taxonomy columns
+rarecurve_counts <- otu_table(AllREadsSE_Indo_Counts_physeq)
+col <- c(rep(KorowaiCol,sum(sample_data(AllREadsSE_Indo_Counts_physeq)[,"SamplePop"]=="MPI")),rep(MentawaiCol,sum(sample_data(AllREadsSE_Indo_Counts_physeq)[,"SamplePop"]=="MTW")),rep(SumbaCol,sum(sample_data(AllREadsSE_Indo_Counts_physeq)[,"SamplePop"]=="SMB")))
+# Try with different filtering thresholds:
+for (i in c(1,5)){
+ 	rarecurve_counts[rarecurve_counts<=i]<-0
+	rarecurve(t(otu_table(rarecurve_counts, taxa_are_rows = TRUE)), step=200, col=col,label=F, xlab="Counts",ylab="Number Species",main=paste("Removing Reads",i,"And Below",sep=" "),xlim=c(0,50000))
+}
+
+```
+
+From the rarefaction curves, we can see that most samples qre starting to asymptote at or under 10,000 reads (however, it also looks like we need a higher sequencing depth, as there isn't a definitive asymptote, meaning we didn't capture everything). 
+
+We can also see that when removing reads 5 and below (shown on the right hand side), the curve asymptotes much sooner. This is because you need more reads to detect rare species, and therefore removing reads 5 and below eliminates some of these rare species.
+
+As mentioned before, because our starting read depth is small, we will stick with removing singletons. We will also add the sequencing depth information to the phyloseq object to keep track of oir library size after filtering.
+
+```{r, message = FALSE}
+
+# save unfiltered phyloseq object
+AllREadsSE_Indo_Counts_physeq_withSingletons <- AllREadsSE_Indo_Counts_physeq
+# Filter out singletons
+otu_table(AllREadsSE_Indo_Counts_physeq)[otu_table(AllREadsSE_Indo_Counts_physeq)<=1]<-0
+AllREadsSE_Indo_Counts_physeq <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq) > 0, AllREadsSE_Indo_Counts_physeq)
+# add sequencing depth information after filtering out singletons
+SeqDepth_noSingletons = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_noSingletons = SeqDepth_noSingletons
+
+```
+
+## Removing humans and plants
+
+From the script 'RemovingViridiplantaeAndMetazoa.R', we saw that human reads and viridiplantae are not of interest and we want to filter these out. When we do this, we'll also keep track of hom many reads we're filtering out after each step.
+
+```{r, message = FALSE}
+
+# Filter out Viridiplantae 
+AllREadsSE_Indo_Counts_physeq <- subset_taxa(AllREadsSE_Indo_Counts_physeq, (Kingdom!="Viridiplantae"))
+AllREadsSE_Indo_Counts_physeq <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq) > 0, AllREadsSE_Indo_Counts_physeq)
+# add sequencing depth information after filtering out plants
+SeqDepth_noViridiplantae = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_noViridiplantae = SeqDepth_noViridiplantae
+
+# Filter out Chordata
+AllREadsSE_Indo_Counts_physeq <- subset_taxa(AllREadsSE_Indo_Counts_physeq, (Phylum!="Chordata"))
+AllREadsSE_Indo_Counts_physeq <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq) > 0, AllREadsSE_Indo_Counts_physeq)
+# add sequencing depth information after filtering out Metazoa
+SeqDepth_noChordata = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_noChordata = SeqDepth_noChordata
+
+# Filter out Metazoa
+AllREadsSE_Indo_Counts_physeq <- subset_taxa(AllREadsSE_Indo_Counts_physeq, (Kingdom!="Metazoa"))
+AllREadsSE_Indo_Counts_physeq <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq) > 0, AllREadsSE_Indo_Counts_physeq)
+# add sequencing depth information after filtering out Metazoa
+SeqDepth_noMetazoa = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
+sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_noMetazoa = SeqDepth_noMetazoa
+
+```
+
+## Summarising the data
+
+Now that we've done all of the filtering, we can plot the final library sizes.
+
+```{r, message = FALSE, fig.height = 8, fig.width = 8, fig.align = "center"}
+# barplot of library sizes
+ggplot(meta(AllREadsSE_Indo_Counts_physeq), aes(SampleName, SeqDepth_noMetazoa)) + geom_bar(stat = "identity", aes(fill = SamplePop)) +
+scale_fill_manual(values = c(KorowaiCol,MentawaiCol,SumbaCol)) + rotate_x_text()
+
+```
+
+We can see that the library sizes are highly uneven, with some samples having a  very high library depth (many in the Korowai), and many having a very low library depth. 
+
+The final step us is to summarise the data and see how many reads we lost at each filtering step. We'll show this one the log scale since there is a large variance in depth between samples. 
+
+```{r, message = FALSE, fig.height = 7, fig.width = 14, fig.align = "center"}
+FilteringSummary = sample_data(AllREadsSE_Indo_Counts_physeq)[,c("SamplePop","SeqDepth_Prefilter","SeqDepth_noSingletons","SeqDepth_noViridiplantae","SeqDepth_noChordata","SeqDepth_noMetazoa")]
+
+# melt df and plot
+melted_FilteringSummary = melt(FilteringSummary)
+ggplot(melted_FilteringSummary, aes(x=variable, y=log(value))) +
+  geom_violin(alpha=0.8) + theme_bw() + ylab("Spearman pairwise correlation") +
+  theme(axis.title.x=element_blank(), axis.text.x = element_text(angle = 90)) + scale_fill_manual(values = c(KorowaiCol,MentawaiCol,SumbaCol)) +
+  geom_boxplot(color="black",width=0.2, alpha = 0.7)
+
+```
+
+We can see that most of the reads are removed when removing Chordates.
+
+# Data normalisation
+
+The library sizes between samples and groups is highly variable, and therefore comparing the data to each other will result in biased results. 
+
+There are two ways of handling this: 
+1. Performing a transformation of the data or
+2. rarefying the data.
+
+Rarefaction is performed by drawing reads without replacement from each sample so that all samples have the same number of total counts. This process standardizes the library size across samples and is especially important for calulating diversity metrics, where read depth influences microbe diversity. 
+
+From what I've found, many people in the microbiomics community have very strong opinions about rarefying data. Some camps, such as QIIME, think that it's just fine, whereas others, such as the creators of Phyloseq, strongly advise against it. A seminal, and of the most well-referenced papers about the disadvantages of rarefying data, was published in 2014 by [McMurdie & Holmes](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003531). The arguments they have echo the main concerns seen within the 'anti-rarefy' camps: namely that rarefying data 1) decreases the ability to detect rare taxa and 2) can lead to unequally-rarefied data due to rare taxa being over or underrepresented in libraries normalised to a small size. 
+
+The overall consesnus I've found about rarefaction is that it should be avoided when possible. Therefore, we'll be using transformations of the data instead to correct for uneven sequencing depth. 
+
+## Centered log-ration transformation
+Taxa can be viewed by their relative abundance, however changes in the abundance of one taxon will result in changing the abundance of other taxa. 
+
+One of the ways to handle this is to transform the data using Centered Log Ratio (CLR) transformation. CLR data shows how OTUs behave relative to the per-sample average and is a commonly-used data transformation method in microbiomics. 
+
+Another cool thing about using CLR-transformed data is that it is not affected by sequencing depth. This excerpt from a paper by [Gloor et al](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5695134/) explains this really well:
+
+"The clr-transformed values are scale-invariant; that is the same ratio is expected to be obtained in a sample with few read counts or an identical sample with many read counts, only the precision of the clr estimate is affected. This is elaborated in the “Probability” and “Log-ratio transformations” section in the Supplement, but the consequence is that count normalization is unnecessary and indeed, undesirable since information on precision is lost." 
+
+Unfortunately, one of the disadvantages to using CLR-transformed data is that it can't be used in diversity estimates, and it's also hard to visualise.
+
+Becasue CLR data is an informative measure of our data, I'll first explore sample grouping using this method.
+
+The first step to performing a CLR transformation on the data is to add an offset of 1 to the counts. This is necessary, since performing a log on 0 values is undefined. We'll then perform a log ratio transformation of the data using the mixOmics package.
+
+```{r, message = FALSE, warning = FALSE}
+offset_otu=otu_table(AllREadsSE_Indo_Counts_physeq)+1
+transform_counts=t(otu_table(offset_otu))
+data_clr <- logratio.transfo(as.matrix(transform_counts), logratio = 'CLR', offset = 0) 
+```
+
+### Sample grouping/beta diversity
+
+Now that we've transformed our data, we can make a PCA plot to see how each sample clusters. The current obect we have is a CLR-class object. You can plot this type of data object easily with mixOmics, however I prefer the visualisation that phyloseq offers (you can't alter the PCA plots that much in mixOmics). So, we'll turn the clr object back into a phyloseq object and make an ordination plot of the data.
+
+!Note: When Euclidean distances are used in PCoA plots, it is [equivalent to a PCA plot](http://ordination.okstate.edu/overview.htm). 
+
+```{r, message = FALSE, warning = FALSE, fig.height = 8, fig.width = 8, fig.align = "center"}
+# Make a duplicated phyloseq object to use for plotting
+class(data_clr)="matrix"
+taxa = otu_table(t(data_clr), taxa_are_rows = TRUE)
+AllREadsSE_Indo_Counts_physeq_clr=AllREadsSE_Indo_Counts_physeq
+otu_table(AllREadsSE_Indo_Counts_physeq_clr)=taxa
+
+# calculat Euclidean distances
+out.wuf.log <- ordinate(AllREadsSE_Indo_Counts_physeq_clr, method = "PCoA", distance = "euclidean")
+# plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="SamplePop", axes = 1:2, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
+
+# Make an ordination plot using euclidean distances
+beta.ps1 <- plot_ordination(ArrllREadsSE_Indo_Counts_physeq_clr, 
+                            out.wuf.log, 
+                            color="SamplePop", 
+                            label = "SampleName") + 
+  geom_point(aes(), size= 4) + 
+  theme(plot.title = element_text(hjust = 0, size = 12))
+
+# add in an ellipse
+beta.ps1 + stat_ellipse() + theme_bw(base_size = 14) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
+
+
+```
+
+In the first principal component, there isn't any clear grouping by island, but you can see some samples clustering away from the majority of the samples. These are samples with a high Plasmodium load. Let's highlight each sample by Plasmodium load (on the log scale for easier visualisation).
+
+```{r, message = FALSE, warning = FALSE, fig.height = 8, fig.width = 8, fig.align = "center"}
+logged_phyla_counts = log10(colSums(otu_table(AllREadsSE_Indo_Counts_physeq)[grep("Apicomplexa",tax_table(AllREadsSE_Indo_Counts_physeq)[,"Phylum"])])+1)
+sample_data(AllREadsSE_Indo_Counts_physeq_clr)[["Apicomplexa"]] = logged_phyla_counts
+out.wuf.log <- ordinate(AllREadsSE_Indo_Counts_physeq_clr, method = "PCoA", distance = "euclidean")
+plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="Apicomplexa", axes = 1:2, label="SampleName")
+
+```
+
+Here, you can now see lighter blue samples (high Plasmodium load) separating away from darker blue samples (no Plasmodium load).
+
+Let's look at a few more dimensions in the PCA to see if any clustering stands out.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 8, fig.width = 8, fig.align = "center"}
+out.wuf.log <- ordinate(AllREadsSE_Indo_Counts_physeq_clr, method = "PCoA", distance = "euclidean")
+plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="SamplePop", axes = 2:3, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
+plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="SamplePop", axes = 3:4, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
+plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="SamplePop", axes = 4:5, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
+
+```
+
+Finally, let's see how sample grouping looks like by another clustering method - hierarchical clustering by Euclidean distance. Again, this is done on the CLR-transformed data to correct for sequencing depth.
+
+```{r, message = FALSE, fig.height = 7, fig.width = 12, fig.align = "center"}
+ps_otu <- data.frame(phyloseq::otu_table(AllREadsSE_Indo_Counts_physeq_clr))
+ps_otu <- t(ps_otu)
+bc_dist <- vegan::vegdist(ps_otu, method = "euclidean")
+ward <- as.dendrogram(hclust(bc_dist, method = "ward.D2"))
+#Provide color codes
+meta <- data.frame(phyloseq::sample_data(AllREadsSE_Indo_Counts_physeq_clr))
+colorCode <- c(MPI = KorowaiCol, `MTW` = MentawaiCol, `SMB` = SumbaCol)
+labels_colors(ward) <- colorCode[meta$SamplePop][order.dendrogram(ward)]
+#Plot
+plot(ward)
+
+# Label colours by Plasomodium load
+initial = .bincode(meta$Apicomplexa, breaks=seq(min(meta$Apicomplexa, na.rm=T), max(meta$Apicomplexa, na.rm=T), len = 80),include.lowest = TRUE)
+plasmoCol <- colorRampPalette(c("darkblue", "lightblue"))(79)[initial]
+labels_colors(ward)=plasmoCol[order.dendrogram(ward)]
+plot(ward)
+
+```
+
+In the PCA and hierarchical clustering, there is no obvious clustering by island, however some samples do cluster by plasmodium load.
+
+# Relative frequency of taxa
+
+One of the questions we're most interested in when investigating these samples is: what is in the data? One of the ways to do this is by visualising the data itself. A common way to do this is by looking at a stacked barplot, one for each sample, composed of the relative frequency of taxa in that sample.
+
+Why do we look at relative frequency? As we've seen before, our library sizes are uneven, and therefore we want to see what the proportion of each taxa is in each sample. However, compositional data does not account for the fact that as one species goes up, it will force another species to go down (i.e., it is bounded).
+
+I'll try to solve this problem in a few ways. The first way is by plotting the relative taxa, then plotting the CLR-transformed data (which is unbounded), and finally, seeing how this compares to rarefied data.
+
+To visualise relative frequency, I want to show my taxa at the family level, however since there are over 200 unique taxa at the family level, this would be difficult to visualise with so many colours. Instead, we'll make a new taxa variable which combines Superkingdom information with Family-level information. This way, we can highlight colours by superkingdom (which isn't so visually overwhelming), and still preserve Family-level information.
+
+## Unsubsampled compositional data
+
+```{r, message = FALSE}
+# add a new column containing family names and superkingdom
+tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"] = paste(tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Family"], sep="_")
+tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"] <- gsub("Bacteria_$", "Bacteria_unclassified", tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"])
+tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"] <- gsub("Eukaryota_$", "Eukaryota_unclassified", tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"])
+tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"] <- gsub("Viruses_$", "Viruses_unclassified", tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"])
+```
+
+As pointed out, we have a lot of taxa at the family level, and it would be hard to look over everything at once. Instead, we can focus on the most prevalent taxa and highlight everything else in another colour.
+
+Here, I chose to highlight the top 20 taxa, since that's still representative while not being too visually exhausting.
+
+```{r, message = FALSE, fig.height = 7, fig.width = 15, fig.align = "center"}
+
+aggregated_phyloCounts <- aggregate_top_taxa(AllREadsSE_Indo_Counts_physeq, "Superkingdom", top = 20)
+# transform to relative counts
+relative_phyloCounts <- microbiome::transform(aggregated_phyloCounts, "compositional")
+# Remove weird extra family names added at the end of Superkingdom names
+tax_table(relative_phyloCounts)[,"Superkingdom"] <- paste(sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 1), sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 2), sep="_")
+# Change "Other_NA" to just "Other"
+tax_table(relative_phyloCounts)[,"Superkingdom"][grep("Other", taxa_names(relative_phyloCounts))] = "Other"
+
+# Plot
+p=plot_bar(relative_phyloCounts, fill = "Superkingdom")
+
+# set colour palette
+families=levels(p$data$Superkingdom)
+# get number of families in each kingdom
+table(sapply(strsplit(families, "[_.]"), `[`, 1))
+
+PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(14)
+PaletteEukaryote = colorRampPalette(c("#fd8d3c","#800026"))(3)
+PaletteOther = colorRampPalette(c("black"))(1)
+PaletteUnk = colorRampPalette(c("black"))(1)
+PaletteVirus = colorRampPalette(c("#78c679","#006837"))(2)
+
+Merged_Palette <- c(PaletteBacteria,PaletteEukaryote,PaletteOther,PaletteUnk,PaletteVirus)
+
+phyloseq::plot_bar(relative_phyloCounts, fill = "Superkingdom") +
+  geom_bar(aes(fill = Superkingdom), stat = "identity", position = "stack") +
+  labs(x = "", y = "Relative Abundance\n") +
+  facet_wrap(~ SamplePop, scales = "free") + scale_fill_manual(values=Merged_Palette) +
+  theme(panel.background = element_blank(), axis.ticks.x=element_blank())
+
+```
+
+We can see that all populations have a high bacterial load, however in the Korowai population, there's a very high abundance of Plasmodium. In thr Korowai and Mentawai, we can also see Flavivirus is present in many samples.
+
+Although it's not very easy to visualise (and I haven't seen these barplots in any other papers), let's also visualise the data in a more accurate way - by using CLR-transformed data rather than compositional data.
+
+```{r, message = FALSE, fig.height = 7, fig.width = 15, fig.align = "center"}
+aggregated_phyloCounts <- aggregate_top_taxa(AllREadsSE_Indo_Counts_physeq, "Superkingdom", top = 20)
+# transform to relative counts
+relative_phyloCounts <- microbiome::transform(aggregated_phyloCounts, "clr")
+# Remove weird extra family names added at the end of Superkingdom names
+tax_table(relative_phyloCounts)[,"Superkingdom"] <- paste(sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 1), sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 2), sep="_")
+# Change "Other_NA" to just "Other"
+tax_table(relative_phyloCounts)[,"Superkingdom"][grep("Other", taxa_names(relative_phyloCounts))] = "Other"
+
+# Plot
+p=plot_bar(relative_phyloCounts, fill = "Superkingdom")
+
+# set colour palette
+families=levels(p$data$Superkingdom)
+# get number of families in each kingdom
+table(sapply(strsplit(families, "[_.]"), `[`, 1))
+
+PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(14)
+PaletteEukaryote = colorRampPalette(c("#fd8d3c","#800026"))(3)
+PaletteOther = colorRampPalette(c("black"))(1)
+PaletteUnk = colorRampPalette(c("black"))(1)
+PaletteVirus = colorRampPalette(c("#78c679","#006837"))(2)
+
+Merged_Palette <- c(PaletteBacteria,PaletteEukaryote,PaletteOther,PaletteUnk,PaletteVirus)
+
+phyloseq::plot_bar(relative_phyloCounts, fill = "Superkingdom") +
+  geom_bar(aes(fill = Superkingdom), stat = "identity", position = "stack") +
+  labs(x = "", y = "Relative Abundance\n") +
+  facet_wrap(~ SamplePop, scales = "free") + scale_fill_manual(values=Merged_Palette) +
+  theme(panel.background = element_blank(), axis.ticks.x=element_blank())
+
+```
+On the negative y-axis for each plot, you can see what each sample lacks. For example, all samples within the Mentawai population lack Plasmodium. 
+
+Now let's see how this looks like in the rarefied data.
+
+## Rarefied compositional data
+
+Although we generally want to avoid rarefaction, we will use it here for the purposes of comparing it to our unsubsampled, compositional data. Recently, a package called [SRS](https://peerj.com/articles/9593/) (standing for Scaling with Ranked Subsampling) came out in R and it preserves OTU frequencies by 1) scaling counts by a constant factor where the sum of the scaled counts equals the minimum library size chosen by the user and 2) performing a ranked subsampling on the data. Since this is the best method I could find for rarefying while preserving the original library composition, we will use this method.
+
+SRS require that you use a minimum value to rarefy to. I chose a minimum (in the function, it's called Cmin) of 2,000 since a [seminal paper](https://www.pnas.org/content/108/Supplement_1/4516) in the microbiome field
+tested this and found that 2,000 single-end reads are sufficient for detecting most communities. Rarefying to 2,000 also results in the loss of many samples, so I don't want to rarefy to a higher depth than that. 
+
+SRS won't work if we have samples with a library size under our minimum threshold, so let's remove all samples under 2000, then perform rarefaction.
+
+```{r, message = FALSE, warning = FALSE}
+minControl=2000
+keep=names(which(sample_sums(AllREadsSE_Indo_Counts_physeq)>=minControl))
+pruned_data=prune_samples(keep, AllREadsSE_Indo_Counts_physeq)
+any(taxa_sums(pruned_data) == 0)
+pruned_data <- prune_taxa(taxa_sums(pruned_data) > 0, pruned_data)
+any(taxa_sums(pruned_data) == 0)
+pruned_data_df=as.data.frame(otu_table(pruned_data))
+SRS=SRS(pruned_data_df,minControl)
+rownames(SRS)=rownames(pruned_data_df)
+
+table(sample_data(pruned_data)[,"SamplePop"])
+```
+
+After pruning the data, we can see that only 16 Indonesian samples remain out of the original 117 (so we lost 101!). Now let's add the rarefied data to the pruned phyloseq object.
+
+```{r, message = FALSE, warning = FALSE}
+
+# transform back into phyloseq object
+taxa = otu_table(SRS, taxa_are_rows = TRUE)
+otu_table(pruned_data)=taxa
+any(taxa_sums(pruned_data) == 0)
+pruned_data <- prune_taxa(taxa_sums(pruned_data) > 0, pruned_data)
+any(taxa_sums(pruned_data) == 0)
+```
+
+Now let's make sure the library sizes are the same and see how the OTU numbers look like between datasets.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 7, fig.width = 14, fig.align = "center"}
+
+SeqDepthPruned = sample_sums(pruned_data)
+sample_data(pruned_data)$SeqDepthPruned = SeqDepthPruned
+
+# barplot of library sizes
+ggplot(meta(pruned_data), aes(SampleName, SeqDepthPruned)) + geom_bar(stat = "identity", aes(fill = SamplePop)) +
+scale_fill_manual(values = c(KorowaiCol,MentawaiCol,SumbaCol)) + rotate_x_text()
+
+# get barplot of total counts per individual
+nOTUs = colSums(otu_table(pruned_data)!=0)
+sample_data(pruned_data)$nOTUs = nOTUs
+
+# barplot of OTUs
+ggplot(meta(pruned_data), aes(SampleName, nOTUs)) + geom_bar(stat = "identity", aes(fill = SamplePop)) +
+scale_fill_manual(values = c(KorowaiCol,MentawaiCol,SumbaCol)) + rotate_x_text()
+
+```
+Finally, lets compare the rarefied data to the compositional data. 
+
+```{r, message = FALSE, fig.height = 7, fig.width = 15, fig.align = "center"}
+# add a new column containing family names and superkingdom
+tax_table(pruned_data)[,"Superkingdom"] = paste(tax_table(pruned_data)[,"Superkingdom"], tax_table(pruned_data)[,"Family"], sep="_")
+tax_table(pruned_data)[,"Superkingdom"] <- gsub("Bacteria_$", "Bacteria_unclassified", tax_table(pruned_data)[,"Superkingdom"])
+tax_table(pruned_data)[,"Superkingdom"] <- gsub("Eukaryota_$", "Eukaryota_unclassified", tax_table(pruned_data)[,"Superkingdom"])
+tax_table(pruned_data)[,"Superkingdom"] <- gsub("Viruses_$", "Viruses_unclassified", tax_table(pruned_data)[,"Superkingdom"])
+
+# For some reason, top is actually top + 1, so here it would be 20
+aggregated_phyloCounts <- aggregate_top_taxa(pruned_data, "Superkingdom", top = 20)
+# transform to relative counts
+relative_phyloCounts <- microbiome::transform(aggregated_phyloCounts, "compositional")
+# Remove weird extra family names added at the end of Superkingdom names
+tax_table(relative_phyloCounts)[,"Superkingdom"] <- paste(sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 1), sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 2), sep="_")
+# Change "Other_NA" to just "Other"
+tax_table(relative_phyloCounts)[,"Superkingdom"][grep("Other", taxa_names(relative_phyloCounts))] = "Other"
+
+# Plot
+p=plot_bar(relative_phyloCounts, fill = "Superkingdom")
+
+# set colour palette
+families=levels(p$data$Superkingdom)
+# get number of families in each kingdom
+table(sapply(strsplit(families, "[_.]"), `[`, 1))
+
+PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(14)
+PaletteEukaryote = colorRampPalette(c("#fd8d3c","#800026"))(4)
+PaletteOther = colorRampPalette(c("black"))(1)
+PaletteVirus = colorRampPalette(c("#78c679","#006837"))(2)
+
+Merged_Palette <- c(PaletteBacteria,PaletteEukaryote,PaletteOther,PaletteVirus)
+
+phyloseq::plot_bar(relative_phyloCounts, fill = "Superkingdom") +
+  geom_bar(aes(fill = Superkingdom), stat = "identity", position = "stack") +
+  labs(x = "", y = "Relative Abundance\n") +
+  facet_wrap(~ SamplePop, scales = "free") + scale_fill_manual(values=Merged_Palette) +
+  theme(panel.background = element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+```
+Since we lost so many samples, the data looks very different between populations (notably between Mentawai and the other two populations). The Korowai clearly have an overrepresentation of Plasmodium, Mentawai has an overrepresentation of Flavivirus, and Sumba is a bit more even in its diversity. Clearly, it looks like when you rarefy data, you lose a lot of the information.
+
+
+# Differential abundance testing
+
+We're interested in testing whether the species composition between islands is significantly different. One way to test this is through differential abundance testing.
+
+One of the best packages I've found so far to test this is called [Aldex2](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0067019) (ANOVA-Like Differential Expression). Aldex2 works by generatating a posterior probability (128 by default) for an observed instance of a taxon (adding a small prior to deal with zeros), then performing a centered log-ratio transformation on the data as a normalisation step (this deals with uneven library sizes). To identify differentially expressed genes, Aldex2 then performs a significance test using a Wilcoxon rank test, and finally, the probability of the taxon being differentially abundant is adjusted with FDR correction (by Benjamini–Hochberg). 
+
+Aldex2 corrects for uneven library sizes, so rarefying is not necessary. The only input we need is the data with singletons removed.
+
+Since Aldex2 works by comparing two datasets, we need to subset the datasets into groups of two. 
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 14, fig.align = "center"}
+
+# Differential abundance testing
+MPIVsMTW=subset_samples(AllREadsSE_Indo_Counts_physeq, SamplePop != "SMB")
+any(taxa_sums(MPIVsMTW) == 0)
+# remove any 0s from the data
+MPIVsMTW <- prune_taxa(taxa_sums(MPIVsMTW) > 0, MPIVsMTW)
+taxa_names(MPIVsMTW)=make.unique(tax_table(MPIVsMTW)[,"Family"])
+# Run aldex2
+aldex2_MPIVsMTW <- ALDEx2::aldex(data.frame(phyloseq::otu_table(MPIVsMTW)), phyloseq::sample_data(MPIVsMTW)$SamplePop, test="t", effect = TRUE)
+
+sig_aldex2_MPIVsMTW <- aldex2_MPIVsMTW %>%
+  rownames_to_column(var = "OTU") %>%
+  filter(wi.eBH < 0.05) %>%
+  arrange(effect, wi.eBH) %>%
+  dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
+
+```
+
+After running Aldex2 on the Korowai versus the Mentawai, we can see that nothing significant remains. Now let's run it on the Korowai versus people from the island of Sumba.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 14, fig.align = "center"}
+
+MPIVsSMB=subset_samples(AllREadsSE_Indo_Counts_physeq, SamplePop != "MTW")
+any(taxa_sums(MPIVsSMB) == 0)
+MPIVsSMB <- prune_taxa(taxa_sums(MPIVsSMB) > 0, MPIVsSMB)
+taxa_names(MPIVsSMB)=make.unique(tax_table(MPIVsSMB)[,"Family"])
+aldex2_MPIVsSMB <- ALDEx2::aldex(data.frame(phyloseq::otu_table(MPIVsSMB)), phyloseq::sample_data(MPIVsSMB)$SamplePop, test="t", effect = TRUE)
+sig_aldex2_MPIVsSMB <- aldex2_MPIVsSMB %>%
+  rownames_to_column(var = "OTU") %>%
+  filter(wi.eBH < 0.05) %>%
+  arrange(effect, wi.eBH) %>%
+  dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
+```
+
+Again, there is nothing significant between the Korowai and people from the island of Sumba. Finally, let's test if there are differentially abundant taxa in Mentawai versus people from the island of Sumba.
+
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 14, fig.align = "center"}
+
+MTWVsSMB=subset_samples(AllREadsSE_Indo_Counts_physeq, SamplePop != "MPI")
+any(taxa_sums(MTWVsSMB) == 0)
+MTWVsSMB <- prune_taxa(taxa_sums(MTWVsSMB) > 0, MTWVsSMB)
+taxa_names(MTWVsSMB)=make.unique(tax_table(MTWVsSMB)[,"Family"])
+aldex2_MTWVsSMB <- ALDEx2::aldex(data.frame(phyloseq::otu_table(MTWVsSMB)), phyloseq::sample_data(MTWVsSMB)$SamplePop, test="t", effect = TRUE)
+sig_aldex2_MTWVsSMB <- aldex2_MTWVsSMB %>%
+  rownames_to_column(var = "OTU") %>%
+  filter(wi.eBH < 0.05) %>%
+  arrange(effect, wi.eBH) %>%
+  dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
+
+```
+
+As in the rest of the island comparisons, there are no statistically significant differentially abundant taxa.
+
+# Alpha diversity
+
+Alpha diversity measures within-sample diverity and looks at how many taxa are observed, as well as how evenly they are distributed. 
+
+There is a lot of controversy around how best to analyse alpha diversity. Because a higher sequencing depth will lead to a greater likelihood of diversity, many people rarefy their data beforehand. However, rarefying data (as pointed out above), not only discards data, but leads to biases when rarefied. 
+
+Current tools to estimate alpha diversity either underestimate richness or underestimate uncertainty, however DivNet is a package that adresses these problems. Divnet is a method for estimating within- and between-community diversity in ecosystems where taxa interact via an ecological network. It accounts for differences in sequencing depth and estimates the number of missing species based on the sequence depth and
+number of rare taxa in the data.
+
+To use DivNet, you need unsubsampled data without removing singletons.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+# Remove Viridiplantae and Metazoa
+AllREadsSE_Indo_Counts_physeq_withSingletons <- subset_taxa(AllREadsSE_Indo_Counts_physeq_withSingletons, (Kingdom!="Viridiplantae"))
+AllREadsSE_Indo_Counts_physeq_withSingletons <- subset_taxa(AllREadsSE_Indo_Counts_physeq_withSingletons, (Kingdom!="Metazoa"))
+# remove any empty rows
+AllREadsSE_Indo_Counts_physeq_withSingletons <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq_withSingletons) > 0, AllREadsSE_Indo_Counts_physeq_withSingletons)
+
+```
+Now that we have data without singletons, we now need to merge our data at a specified taxonomic level. DivNet is computationally expensive, and therefore a higher level is much, much faster.
+We'll therefore test how our groups look like at the Phylum level. Then, we'll run DivNet without specifying any hypothesis testing.
+
+```{r, message = FALSE, warning = FALSE, results = "hide", fig.height = 10, fig.width = 12, fig.align = "center"}
+
+# comparing diversity at the phylum level
+pop_comparison <- AllREadsSE_Indo_Counts_physeq_withSingletons %>%
+  tax_glom("Phylum")
+
+# If we don't change the sample names here from hyphens to periods, we'll get an error later
+sample_names(pop_comparison) <- gsub("\\-", ".", sample_names(pop_comparison))
+
+# Run divnet without specifying any hypothesis testing
+dv_pop_comparison <- divnet(pop_comparison, ncores = 4)
+
+```
+
+DivNet will output an object with estimates for multiple different alpha (and beta) diversity measures (we'll get to the beta diversity estimates later).
+The Shannon and Simpson index are two popular alpha diversity indices to measure species richness. For Shannon diversity, the importance of rare taxa are downweighted, since they do not play a large role in the community or they could potentially be due to error. For this reason, the Shannon index is one of the most popular alpha diversity metrics.
+
+To interpret the index, a higher Shannon index means higher diversity, whereas a lowed index number means lower diversity.
+
+Let's take out the Shannon diversity metric from DivNet and plot it.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+
+# Now let's plot the results of shannon and Simpson diversity
+summary_df_shannon <- as.data.frame(dv_pop_comparison$shannon %>%
+  summary %>%
+  add_column("SampleNames" = pop_comparison %>% otu_table %>% sample_names) %>%
+  add_column("SamplePop" =  pop_comparison %>% sample_data %>% .[,"SamplePop"] %>% as.matrix(.) %>% .[,1] %>% unname(.)))
+
+ggplot(summary_df_shannon, aes(y = estimate, x = SamplePop, fill = SamplePop)) + geom_violin(alpha=0.7) + 
+  geom_jitter(height = 0, width = .2) + geom_boxplot(width=0.08, outlier.color = NA) +
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + ggtitle("Shannon Diversity") +
+  ylab("Estimate of Shannon Diversity")
+```
+
+We can see that, on average, the Sumba and Mentawai populations have a higher Shannon diversity while the Korowai are slightly lower. 
+
+We can also plot each individual sample, along with their standard deviation (another cool, and imprortant feature that DivNet calculates and uses in their hypothesis testing). 
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+plot(dv_pop_comparison$shannon, pop_comparison, col = "SamplePop") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
+```
+
+Now let's see how the population diversity looks like when we use the Simpson diversity index. The Simpson diversity index is a similarity index where the higher the value, the lower the diversity. It measures the probability that two individuals randomly selected from a sample will belong to the same species. With this index, 0 represents infinite diversity and 1, no diversity.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+summary_df_simpson <- as.data.frame(dv_pop_comparison$simpson %>%
+  summary %>%
+  add_column("SampleNames" = pop_comparison %>% otu_table %>% sample_names) %>%
+  add_column("SamplePop" =  pop_comparison %>% sample_data %>% .[,"SamplePop"] %>% as.matrix(.) %>% .[,1] %>% unname(.)))
+
+ggplot(summary_df_simpson, aes(y = estimate, x = SamplePop, fill = SamplePop)) + geom_violin(alpha=0.7) + 
+  geom_jitter(height = 0, width = .2) + geom_boxplot(width=0.08, outlier.color = NA) +
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + ggtitle("Simpson's Diversity Index") +
+  ylab("Estimate of Simpson Diversity")
+
+```
+
+Again, we can see that the same trend holds true - Mentawai and Sumba have the highest diversity (remember, and index of 0 equates to infinite diversity), while the Korowai population has the lowest diversity.
+
+This is how the diversity looks like with SE included for each sample.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+plot(dv_pop_comparison$simpson, pop_comparison, col = "SamplePop") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
+```
+Since a larger Simpson index value equates to a lower diversity index, many people find this confusing and not
+very intuitive. Therefore, the inverse Simpsone Index, or 1 - Simpson Index, is also commonly used.
+Let's plot that now. 
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+# Subtract the Simpson estimate from one
+summary_df_simpson$estimate = 1-summary_df_simpson$estimate
+# Plot
+ggplot(summary_df_simpson, aes(y = estimate, x = SamplePop, fill = SamplePop)) + geom_violin(alpha=0.7) + 
+  geom_jitter(height = 0, width = .2) + geom_boxplot(width=0.08, outlier.color = NA) +
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + ggtitle("Simpson's Diversity Index") +
+  ylab("Estimate of Simpson Diversity")
+```
+
+Now let's test the hypothesis that the diversity is different between islands. We are now estimating the diversity of island/population being an ecosystem, so we're focusing on the ecosystem, not just the samples. 
+Let's test this first using the Shannon diversity index. 
+
+```{r, message = FALSE, warning = FALSE, results = "hide", fig.height = 10, fig.width = 12, fig.align = "center"}
+
+# test the hypothesis that the diversity is differnet between islands
+dv_pop_comparison_cov <- pop_comparison %>%
+  divnet(X = "SamplePop", ncores = 8)
+
+# Plot the results for each individual
+plot(dv_pop_comparison_cov$shannon, pop_comparison, col = "SamplePop") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
+```
+
+Interestingly, we now see that, as a population, the Korowai samples have the highest Shannon diversity, followed by the Mentawai and Sumba samples. However, you can also see that there are large error bars around the Korowai samples.
+
+Let's test the hypothesis that the islands are different formally.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+
+# test that these populations are actually different
+testDiversity(dv_pop_comparison_cov, "shannon")
+```
+
+The result tells us that the mean Shannon diversity in the Korowai at the Phylum-level is 1.21, and it is significantly lower by 0.15 orders, on average, in the Mentawai population. We can also see that the Sumba population is significantly lower than the Korowai population by 0.15 orders, on average.
+
+Let's do the same thing for Simpson diversity.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+plot(dv_pop_comparison_cov$simpson, pop_comparison, col = "SamplePop") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
+```
+
+With the Simpson index, we see that the Mentawai and Sumba populations have the highest Simpson index (i.e., lowest diversity).
+
+Again, let's test this formally.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 12, fig.align = "center"}
+testDiversity(dv_pop_comparison_cov, "simpson")
+```
+
+The result tells us that the mean Simpson diversity index in the korowai population at the Phylum-level is 0.5, and it is significantly higher by 0.05 orders, on average, in the Mentawai population. We can also see that the Sumba population is significantly higher than the Korowai population by 0.05 orders, on average.
+
+# Beta Diversity
+
+Beta diversity is a measure of dissimilarity metric between samples to compare differneces in species composition. It's helpful to know not only how taxonomically/pathogenically rich each sample is, but also to see differences in samples and populations.
+
+There are multiple beta diversity measures to use, including Bray-curtis dissimilarity (based on abundances), Jaccard distance (based on presence or absence), Euclidean distance, and Unifrac (based on sequence distances using a phylogenetic tree).
+
+The Bray–Curtis dissimilarity metric is probably the most popular beta diversity metric and is bounded between 0 and 1, where 0 means the two sites have the same composition (all species are shared), and 1 means the two sites do not share any species.
+
+Unlike alpha diversity, beta diversity is not as sensitive to singletons, and it has even been suggested that 'using simple proportions' (i.e., relative abundance) on non-rarefied data [is fine](https://github.com/joey711/phyloseq/issues/470). I haven't found enough information on this one way or another, but I belive sticking with clr-transformed data is essential. 
+
+When we were looking at sample grouping (above), I didn't observe any clustering by island, but let's explore the results from DivNet to see how the Bray-Curtis dissimilarity looks like.
+
+
+```{r, message = FALSE, fig.height = 10, fig.width = 10, fig.align = "center"}
+
+# First, let's look at Bray-curtis dissimilarity at the individual sample level
+bray_est <- simplifyBeta(dv_pop_comparison, pop_comparison, "bray-curtis", "SamplePop")
+
+# add in group comparisons and plot
+bray_est$group=paste(bray_est$Covar1,bray_est$Covar2,sep="_")
+ggplot(bray_est, aes(x = interaction(Covar1, Covar2), y = beta_est, fill=group)) +
+  geom_violin(alpha=0.7) + geom_boxplot(width=0.1) + xlab("Population Comparisons") + 
+  theme(legend.position="none") + ggtitle("Bray-Curtis Distance Estimate") +
+  ylab("Bray-Curtis Distance")
+
+```
+
+From DivNet, again we can see that the greatest dissimilarity is between the Malian population, particularly the UK versus Malia. Unsurpiringly, the least dissimilar samples are comparing populations to themselves (UK samples to UK samples and Indonesian samples to Indonesian samples), with the exception of the Malian samples. When comparing beta diversity within the Malian samples, we can see that the mean Bray-Curtis dissimilarity estimate is nearly 0.5, which is even higher than UK samples compared to Indonesian samples. We also see quite a but of spread in distance estimates when comparing populations to the Indonesian or Malian samples.
+
+Now let's test beta diversity in DivNet using Euclidean distance.
+
+```{r, message = FALSE, fig.height = 10, fig.width = 10, fig.align = "center"}
+
+# First, let's look at Bray-curtis dissimilarity at the individual sample level
+bray_est_eucl <- simplifyBeta(dv_pop_comparison, pop_comparison, "euclidean", "SamplePop")
+
+# add in group comparisons and plot
+bray_est_eucl$group <- paste(bray_est_eucl$Covar1, bray_est_eucl$Covar2,sep="_")
+
+ggplot(bray_est_eucl, aes(x = interaction(Covar1, Covar2), y = beta_est, fill=group)) +
+  geom_violin(alpha=0.7) + geom_boxplot(width=0.1) + xlab("Population Comparisons") + 
+  theme(legend.position="none") + ggtitle("Euclidean Distance Estimate") +
+  ylab("Euclidean Distance")
+
+```
+
+We can see very similar trends in using Euclidean distance, compared to the Bray-Curtis dissimilarity metric. 
+
+Now let's see how this looks like for island-level comparisons.
+
+
+```{r, message = FALSE, fig.height = 10, fig.width = 10, fig.align = "center"}
+
+# Bray-Curtis dissimilarity
+simplifyBeta(dv_pop_comparison_cov, pop_comparison, "bray-curtis", "SamplePop") %>%
+  ggplot(aes(x = interaction(Covar1, Covar2), 
+             y = beta_est)) +
+  geom_point() +
+  geom_linerange(aes(ymin = lower, ymax = upper)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("") + ylab("Estimates of Bray-Curtis distance")
+
+# Euclidean distance
+simplifyBeta(dv_pop_comparison_cov, pop_comparison, "euclidean", "SamplePop") %>% filter(beta_var != 0) %>% 
+  ggplot(aes(x = interaction(Covar1, Covar2), 
+             y = beta_est)) +
+  geom_point() +
+  geom_linerange(aes(ymin = lower, ymax = upper)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("") + ylab("Estimates of Bray-Curtis distance")
+
+```
+
+This confirms that indeeed, the Malian population is the most dissimilar from the other two populations.
