@@ -1,0 +1,646 @@
+
+# created by KSB on 2020-10-22
+
+
+# In this analysis, I'll be running ICA on the Indonesian dataset in order to tease apart the contribution of genes and pathogens to expression levels. 
+
+# Load packages
+library(Biobase)
+library(plyr)
+library(ggplot2)
+library(foreach)
+library(xtable)
+library(biomaRt)
+library(GOstats)
+library(cluster)
+library(marray)
+library(mclust)
+library(RColorBrewer)
+library(igraph)
+library(Rgraphviz)
+library(graph)
+library(colorspace)
+library(annotate)
+library(scales)
+library(gtools)
+library(JADE)
+library(edgeR)
+library(limma)
+library(MineICA)
+library(ade4)
+library(ComplexHeatmap)
+library(circlize)
+library(polycor)
+library(ggpubr)
+library(reshape2)
+library(phyloseq)
+library(goseq)
+library(KEGGREST)
+
+# Set paths:
+inputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/"
+otuDir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/SEIndonesianSamples/"
+outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/ICA/"
+
+# Set up colour schemes
+KorowaiCol="#F21A00"
+MentawaiCol="#3B9AB2"
+SumbaCol="#EBCC2A"
+
+######################
+# Data preprocessing #
+######################
+
+# To perform the IC analysis, we'll be using the package MineICA, which is a Bioconductor package that supplies a framework and storage for IC analysis. Ultimately to perform the IC analysis, we need an object containing our normalised (log2-CPM), batch-corrected data, as well as our normalised OTU data.  
+# Let's load in the expression data, as well as our CLR-normalised OTU data.
+
+# load expression data and OTU file
+load(paste0(inputdir, "dataPreprocessing/indoRNA.read_counts.TMM.filtered.Rda"))
+# load(paste0(otuDir,"relative_phyloCounts_clr_filtered.Rda"))
+load(paste0(otuDir,"AllREadsSE_Indo_Counts_physeq_clr.Rda"))
+
+
+# The OTU data is currently at the species level, but we want to analyse this at the phylum level. We'll therefore merge the data at the phylum level using the tax_glom function from Phyloseq. We'll also assign unique taxa names to each species and then turn the OTU data into a dataframe. 
+
+# merge taxa to family level
+relative_phyloCounts_clr <- merged_phylo_counts_zComposition
+
+# assign unique taxa names to phyloseq object
+taxa_names(relative_phyloCounts_clr) <- paste(tax_table(relative_phyloCounts_clr)[,"Superkingdom"], tax_table(relative_phyloCounts_clr)[,"Kingdom"], tax_table(relative_phyloCounts_clr)[,"Phylum"], sep="_")
+
+OTUs = as.data.frame(otu_table(relative_phyloCounts_clr))
+# transform OTU file to make it the same configuration as the expression list
+OTUs=t(OTUs)
+
+# We want to append the OTU object to the expression dataframe, however the expression data currently has all samples, including replicates, whereas the OTU has replicates removed (we only kept replicates with the highest taxa read depth). We'll therefore take out the replicates from the expression dataset and then append the OTU names.
+
+# remove replicates from expression data frame
+load(paste0(otuDir,"removeReplicates.Rda"))
+removeReplicates <- gsub("Batch1", "_firstBatch", removeReplicates) %>% gsub("Batch2", "_secondBatch", .) %>% gsub("Batch3", "_thirdBatch", .)
+y<-y[,-which(colnames(y) %in% removeReplicates)]
+
+# check to see if samplenames in the OTU file are in the same order as the expression list before appending
+samplenamesOTU <- as.character(rownames(OTUs))
+samplenamesOTU <- gsub("\\.","-", samplenamesOTU)
+samplenamesOTU <- gsub("Batch1","", samplenamesOTU)
+samplenamesOTU <- gsub("Batch3","", samplenamesOTU)
+samplenamesOTU <- gsub("Batch2","", samplenamesOTU)
+samplenamesOriginal <- as.character(rownames(y$samples))
+samplenamesOriginal <- sapply(strsplit(samplenamesOriginal, "[_.]"), `[`, 1)
+identical(samplenamesOriginal,samplenamesOTU[match(samplenamesOriginal,samplenamesOTU)])
+# TRUE 
+
+# match OTU data order to expression list oreder 
+OTUs=OTUs[match(samplenamesOriginal,samplenamesOTU),]
+
+# append to DGE list
+for (name in colnames(OTUs)){
+  y$samples[[paste0(name)]]<- OTUs[,name]
+}
+
+
+## Get batch-corrected data ----------------------
+
+# We want batch-corrected expression data (that is, regressing out batch, age, RIN, and blood cell type). We'll do this by using the removeBatchEffect function from Limma.
+
+# age is a variable we use in the model and NA values are not allowed. We'll replace NA with the mean age value
+y$samples$Age[which(is.na(y$samples$Age) == T)]=45
+
+# get batch-corrected data
+lcpm <- cpm(y, log=TRUE)
+design <- model.matrix(~0 + y$samples$Island)
+# rename columns to be "Mentawai", "Sumba", and "Mappi"
+colnames(design)=gsub("Island", "", colnames(design))
+colnames(design)=gsub("y", "", colnames(design))
+colnames(design)=gsub("samples", "", colnames(design))
+colnames(design)=gsub("[\\$$]", "", colnames(design))
+colnames(design)=gsub("West Papua", "Mappi", colnames(design))
+# regress out variables influencing expression
+batch.corrected.lcpm <- removeBatchEffect(lcpm, batch=y$samples$batch, covariates = cbind(y$samples$Age, y$samples$RIN, y$samples$CD8T, y$samples$CD4T, y$samples$NK, y$samples$Bcell, y$samples$Mono, y$samples$Gran), design=design)
+
+# Finally, before we run the IC analysis, we need to mean-center our data.
+indoSampleSet <- t(apply(batch.corrected.lcpm,1,scale,scale=FALSE))
+colnames(indoSampleSet) <- colnames(y)
+
+
+##########################
+# Running ICA using JADE #
+##########################
+
+# There are two algorithms you can choose for IC analysis in MineICA: FastICA, and Jade. Jade (Joint Approximation Diagonalization of Eigenmatrices), is faster and more accurate than FastICA, as FastICA relies on random initializations and has been shown to be [more variable with its results](https://www.sciencedirect.com/science/article/pii/S0165993613001222).
+# Another thing we need to choose is the number of independent components. 
+
+# For every sample, ICA models the level of expression for each gene as a linear weighted sum of several independent components, where each component captures a process. The expression data matrix is therefore decomposed into a number of components characterising activation patterns across genes and samples. 
+# A large number of components can be difficult to intepret, however we also want enough ICs to investigate differnet signals. One method used to determine the number of ICs is to use [principal componenent analysis](https://ieeexplore.ieee.org/document/4288502). That is, choosing the number of PCs which contribute the most variance to the data. Let's look at a scree plot of the batch-corrected data.
+
+pca <- prcomp(t(batch.corrected.lcpm), scale=T, center=T)
+pca.var <- pca$sdev^2/sum(pca$sdev^2)
+var_explained_df <- data.frame(PC=paste0("PC",1:length(pca$sdev)), var_explained=pca.var)
+var_explained_df$PC <- factor(var_explained_df$PC, levels=var_explained_df$PC)
+
+pdf(paste0(outputdir,"VarianceExplained_PCA.pdf"))
+ggplot(var_explained_df, aes(x=PC, y=cumsum(var_explained))) + geom_line() + geom_point(size=4) +
+	labs(title="Scree plot: PCA on scaled data") +
+	theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+dev.off()
+
+# We can see that the first 5 PCs capture the most variance (18% in PC1 down to 3.5% in PC5). All PCs after that contribute to a very small amount of variance (less than 3%). We'll therefore choose 5 independent components.
+
+resJade <- runICA(X=indoSampleSet, nbComp=5, method = "JADE", maxit=10000) 
+# save Jade results
+save(resJade, file=paste0(outputdir,"resJade.Rda"))
+
+# Next, we need to give MineICA some parameters to perform decomposition. We need to tell it what genes we deem significant (i.e., how many standard deviations away from the mean will we consider a gene to be significant). When applying ICA decomposition to genomic data, the distribution of the gene projections on the ICs is expected to be super-Gaussian: a large portion of genes follow a (super-)Gaussian curve centered at zero and a small portion belongs to an outgrowth located on the right and/or on the left hand side of the distribution. These are the genes we're interested in! The default and recommended value is 3, which we'll stick with. We'll also choose a p-value cut-off of 0.05.
+
+params_build <- buildMineICAParams(resPath=paste0(outputdir,"ICA/"), selCutoff=3, pvalCutoff=0.05)
+
+# We also need to set up gene annotation, which we'll do using Biomart ENSEMBL gene IDs.
+mart <- useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl")
+typeIDindoSampleSet <- c(geneID_annotation="SYMBOL", geneID_biomart="ensembl_gene_id", featureID_biomart="ensembl_gene_id")
+
+# Now, let's run the ICA.
+
+# define the reference samples if any, here no normal sample is available
+refSamplesindoSampleSet <- character(0)
+
+# Run ICA using JADE 
+rownames(resJade$A) = colnames(indoSampleSet)
+resBuild <- buildIcaSet(params=params_build, A=data.frame(resJade$A), S=data.frame(resJade$S), dat=indoSampleSet, pData=y$samples, typeID= typeIDindoSampleSet, refSamples=refSamplesindoSampleSet, mart=mart)
+
+# Exploring the IcaSet 
+
+# Inside the ICA decomposition are two matrices: A, a matrix with sample contributions, and S, a matrix containing gene projections. Let's see how these look like.
+
+icaSetIndo <- resBuild$icaSet
+# save IcaSet object
+save(icaSetIndo, file=paste0(outputdir,"icaSetIndo.Rda"))
+
+# look into the IcaSet decomposition
+head(A(icaSetIndo))
+head(S(icaSetIndo))
+
+# In the S matrix, we have a data frame where each genes is a row with a projection corresponding to it (one projection for every gene in every component). What do these projections mean? Genes with larger projections have larger contributions to that dimension, and therefore they're the genes which most strongly influence processes assocoiated with that component. 
+# For the A data frame, we have weights for each sample (in rows), as well as for each dimension (in columns). That weight, or contribution, reflects the activity of the component in this sample. So samples can have a positive or a negative contribution to the component.
+
+
+####################################
+# Investigating contributing genes #
+####################################
+
+# As stated earlier, when applying ICA decomposition to genomic data, the distribution of the gene projections on the ICs is expected to be super-Gaussian, while a small portion of genes belongs to the right or left hand side of the distribution. Let's take a look at the contributing genes in the first component.
+pdf(paste0(outputdir,"GeneFeatureProjections_Dim1to5.pdf"))
+for (i in 1:5){
+	hist(S(icaSetIndo)[,i], breaks=50, main=paste0("Distribution of feature projection on component ",i), xlab="projection values") 
+	abline(v=c(3,-3), col="red", lty=2)
+}
+dev.off()
+
+# From the histogram, you can see that the majority of genes are centered around zero, however a small subset of the genes are 3 or more SD away.
+# We can view the list of these contributing genes by calling the 'selectContrib' function.
+
+# Get genes driving variation in the first 5 PCs 
+contrib <- selectContrib(icaSetIndo, cutoff=3, level="genes")
+# sav eeach contributing genes file individually
+for (item in names(contrib)) { 
+	write.table(contrib[[item]], file=paste0(outputdir,"ContributingGenes_",item,".txt"), row.names=T, col.names=F)
+}
+
+# save contributing genes file
+head(contrib)
+
+# Or, for more detail, we can use the 'writeProjByComp' function. Let's look at some of the contributing genes in the first component.
+params <- resBuild$params
+resW <- writeProjByComp(icaSet=icaSetIndo, params=params, mart=mart, level='genes', selCutoffWrite=3)
+# save resW files
+write.table(resW$nbOccInComp, file=paste0(outputdir,"nbOccInComp.txt"))
+# save list items in listAnnotComp
+for (item in names(contrib)) { 
+	resW$listAnnotComp[item]
+	write.table(resW$listAnnotComp[[item]], file=paste0(outputdir,"resW_listAnnotComp_",item,".txt"), row.names=T, col.names=F)
+}
+
+head(resW$listAnnotComp[[1]])
+
+# In the first component, we can see genes like RNF182 have a large positive projection while genes like SIGLEC14 have a large negative projection. Both positive and negative signs are important but mean different things - genes with positive projections are genes whose expression are positively correlated with the direction of the samples in that component, while opposite projection signs are genes whose expression levels are anti-correlated with the samples in that component.
+# It took me a while to figure this out, and that sentence still sounds confusing, so let's create a figure as an example. Let's take the first positive gene, RNF182. 
+
+# get the first component  of the sample weights df
+sampleWeights_df <- data.frame(rownames(A(icaSetIndo)), A(icaSetIndo)[,1])
+Island = sapply(strsplit(rownames(A(icaSetIndo)), "[-.]"), `[`, 1)
+sampleWeights_df$Island <- Island
+colnames(sampleWeights_df) <- c("samples", "weight", "Island")
+
+ggplot(sampleWeights_df, aes(x=Island, y=weight, fill=Island)) + geom_violin() + theme_bw() + scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + ggtitle("Contribution to IC1") + geom_boxplot(width=0.1)
+
+# We can see that Korowai samples have a negative contribution to component 1, while on average, Mentawai and Sumba have a positive contribution. Therefore, RNF182 should be more highly upregulated in Mentawai and Sumba, on average, than Korowai. Let's check. 
+
+expression_df <- data.frame(lcpm["ENSG00000180537",], y$samples$Island)
+colnames(expression_df) <- c("Expression", "Island")
+expression_df$Island <- factor(expression_df$Island, levels=c("West Papua", "Mentawai", "Sumba"))
+
+ggplot(expression_df, aes(x=Island, y=Expression, fill=Island)) + geom_violin() + theme_bw() + scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + ggtitle("RNF182 (Positive Projection)") + geom_boxplot(width=0.1)
+
+# Great, my understanding holds up. Now let's check it for a negative gene.
+
+expression_df <- data.frame(lcpm["ENSG00000254415",], y$samples$Island)
+colnames(expression_df) <- c("Expression", "Island")
+expression_df$Island <- factor(expression_df$Island, levels=c("West Papua", "Mentawai", "Sumba"))
+
+ggplot(expression_df, aes(x=Island, y=Expression, fill=Island)) + geom_violin() + theme_bw() + scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + ggtitle("SIGLEC14 (Negative Projection)") + geom_boxplot(width=0.1)
+
+# Because the negative projections are anti-correlated, negatively correlated samples to the component will have a positive value of the negative projection genes.
+# Let's also go over what each of the column names mean in this file. 
+
+colnames(resW$listAnnotComp[[1]])
+
+# We can see that we have some descriptive output, such as the ENSEMBL gene name, HGNC symbol, description, etc., but two other columns stand out that might not be as intuitive: nbOcc_forThreshold:3 and "comp_forThreshold:3. The first one, nbOcc_forThreshold:3, gives us the number of components that the gene in that row had a scaled, absolute projection over 3 for. The second value then gives you which columns this gene appears in.
+
+
+###################################################################
+# Testing similarities between DE genes and significant IC genes #
+###################################################################
+
+# One thing we might want to know is what the overlap is between differentially expressed genes we previously found in study one versus genes contributing to each component in the IC analysis. Let's do that by getting all genes from the DE analysis. We'll only get genes which are DE at an adjusted p-value of 0.05 and no log fold change threshold.
+
+# Get DE genes for each island
+SMBvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_SMBvsMPI.txt")
+MTWvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_MTWvsMPI.txt")
+SMBvsMTW=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_SMBvsMTW.txt")
+
+# Now let's see the percentage of overlap for each IC.
+
+# get barplots of proportion of contributing genes in each IC
+contributingGenes=matrix(nrow=3,ncol=5)
+rownames(contributingGenes)=c("SMBvsMPI","MTWvsMPI","SMBvsMTW")
+colnames(contributingGenes)=c("IC1","IC2","IC3","IC4","IC5")
+for (i in 1:5){
+  contributingGenes["SMBvsMPI",i]=length(contrib[[i]][which(names(contrib[[i]]) %in% rownames(SMBvsMPI))])
+  contributingGenes["MTWvsMPI",i]=length(contrib[[i]][which(names(contrib[[i]]) %in% rownames(MTWvsMPI))])
+  contributingGenes["SMBvsMTW",i]=length(contrib[[i]][which(names(contrib[[i]]) %in% rownames(SMBvsMTW))])
+}
+contributingGenes=as.data.frame(contributingGenes)
+contributingGenes$type="contribGenes"
+contributingGenes$Island=rownames(contributingGenes)
+
+# add in DE genes
+deGenes=do.call("cbind", replicate(5, c(nrow(SMBvsMPI),nrow(MTWvsMPI),nrow(SMBvsMTW)), simplify = FALSE))
+deGenes=as.data.frame(deGenes)
+rownames(deGenes)=c("SMBvsMPI","MTWvsMPI","SMBvsMTW")
+colnames(deGenes)=c("IC1","IC2","IC3","IC4","IC5")
+deGenes$type="deGenes"
+deGenes$Island=rownames(deGenes)
+allGenes=rbind(contributingGenes,deGenes)
+meltedGenes=melt(allGenes)
+# reorder
+meltedGenes$type=factor(meltedGenes$type, levels=c("deGenes","contribGenes"))
+
+pdf(paste0(outputdir,"ProportionSharedGenes_DEvsIC_LFC0.pdf"))
+ggplot(meltedGenes, aes(x = Island, y = value, fill = type)) + 
+  geom_bar(stat = 'identity', position = 'fill') + facet_grid(~ variable) + theme_bw() + 
+  theme(axis.title.x=element_blank(), axis.text.x = element_text(angle = 90)) +
+  scale_fill_manual(values = c("#4477AA","#EE6677"))
+dev.off()
+
+# We can see that there's a small overlap in genes, which is particularly apparent in the first four ICs. Now let's look at the amount of overlap between genes at an adjusted p-value of 0.05 and a LFC threshold of 1.
+
+# We can get the overlapping genes for each component for each population pair.
+
+for (dim in c(1:5)){
+  SMBvsMPI_IC_DE_Overlap <- SMBvsMPI[names(contrib[[dim]][which(names(contrib[[dim]]) %in% rownames(SMBvsMPI))]),]
+  write.table(SMBvsMPI_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_SMBvsMPI_LFC0_IC",dim,".txt"))
+  MTWvsMPI_IC_DE_Overlap <- MTWvsMPI[names(contrib[[dim]][which(names(contrib[[dim]]) %in% rownames(MTWvsMPI))]),]
+  write.table(MTWvsMPI_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_MTWvsMPI_LFC0_IC",dim,".txt"))
+  SMBvsMTW_IC_DE_Overlap <- SMBvsMTW[names(contrib[[dim]][which(names(contrib[[dim]]) %in% rownames(SMBvsMTW))]),]
+  write.table(SMBvsMTW_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_SMBvsMTW_LFC0_IC",dim,".txt"))
+}
+
+# Only get genes with a LFC of one and a pvalue of 0.05
+SMBvsMPI_genes=rownames(SMBvsMPI)[which(abs(SMBvsMPI$logFC) >= 1)]
+MTWvsMPI_genes=rownames(MTWvsMPI)[which(abs(MTWvsMPI$logFC) >= 1)]
+SMBvsMTW_genes=rownames(SMBvsMTW)[which(abs(SMBvsMTW$logFC) >= 1)]
+
+# get barplots of proportion of contributing genes in each IC
+contributingGenes=matrix(nrow=3,ncol=5)
+rownames(contributingGenes)=c("SMBvsMPI","MTWvsMPI","SMBvsMTW")
+colnames(contributingGenes)=c("IC1","IC2","IC3","IC4","IC5")
+for (i in 1:5){
+  contributingGenes["SMBvsMPI",i]=length(contrib[[i]][which(names(contrib[[i]]) %in% SMBvsMPI_genes)])
+  contributingGenes["MTWvsMPI",i]=length(contrib[[i]][which(names(contrib[[i]]) %in% MTWvsMPI_genes)])
+  contributingGenes["SMBvsMTW",i]=length(contrib[[i]][which(names(contrib[[i]]) %in% SMBvsMTW_genes)])
+}
+contributingGenes=as.data.frame(contributingGenes)
+contributingGenes$type="contribGenes"
+contributingGenes$Island=rownames(contributingGenes)
+
+# add in DE genes
+deGenes=do.call("cbind", replicate(5, c(length(SMBvsMPI_genes),length(MTWvsMPI_genes),length(SMBvsMTW_genes)), simplify = FALSE))
+deGenes=as.data.frame(deGenes)
+rownames(deGenes)=c("SMBvsMPI","MTWvsMPI","SMBvsMTW")
+colnames(deGenes)=c("IC1","IC2","IC3","IC4","IC5")
+deGenes$type="deGenes"
+deGenes$Island=rownames(deGenes)
+allGenes=rbind(contributingGenes,deGenes)
+meltedGenes=melt(allGenes)
+# reorder
+meltedGenes$type=factor(meltedGenes$type, levels=c("deGenes","contribGenes"))
+
+pdf(paste0(outputdir,"ProportionSharedGenes_DEvsIC_LFC1.pdf"))
+ggplot(meltedGenes, aes(x = Island, y = value, fill = type)) + 
+  geom_bar(stat = 'identity', position = 'fill') + facet_grid(~ variable) + theme_bw() + 
+  theme(axis.title.x=element_blank(), axis.text.x = element_text(angle = 90)) +
+  scale_fill_manual(values = c("#4477AA","#EE6677"))
+dev.off()
+
+# We can see that at a LFC threshold of 1, there's now a much bigger overlap. Again, we see this more so in ICs 1-4, with IC1 reaching over 25% overlap between all population comparisons.
+
+# We can get the overlapping genes for each component for each population pair.
+
+for (dim in c(1:5)){
+  SMBvsMPI_IC_DE_Overlap <- SMBvsMPI[names(contrib[[dim]][which(names(contrib[[dim]]) %in% SMBvsMPI_genes)]),]
+  write.table(SMBvsMPI_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_SMBvsMPI_LFC1_IC",dim,".txt"))
+  MTWvsMPI_IC_DE_Overlap <- MTWvsMPI[names(contrib[[dim]][which(names(contrib[[dim]]) %in% MTWvsMPI_genes)]),]
+  write.table(MTWvsMPI_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_MTWvsMPI_LFC1_IC",dim,".txt"))
+  SMBvsMTW_IC_DE_Overlap <- SMBvsMTW[names(contrib[[dim]][which(names(contrib[[dim]]) %in% SMBvsMTW_genes)]),]
+  write.table(SMBvsMTW_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_SMBvsMTW_LFC1_IC",dim,".txt"))
+}
+
+
+#####################################
+# GO analysis of contributing genes #
+#####################################
+
+
+# We've seen that there genes contributing to each independent component, and some of these genes overlap with DE genes. But what are they actually doing? IC analysis pulls out biological signals from the data, which corresponds to a component. Therefore, we can plug all of the contributing genes into a GO/KEGG analysis to see what pathways they're involved in. We'll do this using [GoSeq](https://genomebiology.biomedcentral.com/articles/10.1186/gb-2010-11-2-r14), which corrects for gene length bias. 
+
+# gene set testing with goSeq
+for(dim in 1:5){
+      # set up gene universe
+      gene.vector=as.integer(rownames(y) %in% names(contrib[[dim]]))
+      names(gene.vector)=rownames(y)
+
+      # implement a weight for each gene dependent on its length
+      pwf=nullp(gene.vector,"hg19","ensGene",plot.fit=FALSE)
+      # use  the  default  method  to  calculate  the  over  and  under  expressed  GO categories among DE genes
+      GO.wall=goseq(pwf,"hg19","ensGene",use_genes_without_cat=TRUE)
+
+      # apply a multiple hypothesis testing correction set at 0.05% (BH method)
+      enriched.GO=GO.wall[p.adjust(GO.wall$over_represented_pvalue, method="BH")<=0.05,]
+      write.table(enriched.GO, file=paste0(outputdir,"EnrichedGOterms_ContributingGenes_LFC0.05_dim",dim,".txt"), quote=F, row.names=F)
+      
+      # plot
+      enriched_BP <- enriched.GO[which(enriched.GO$ontology=="BP"),c("term","over_represented_pvalue")]
+      enriched_BP$term <- factor(enriched_BP$term, levels=enriched_BP$term)
+      # if there are actually enriched GO terms, plot them
+      if (nrow(enriched_BP) > 0){
+      	pdf(paste0(outputdir,"EnrichedBP_Component",dim,".pdf"), width=12, height=10)
+      	print(ggplot(enriched_BP, aes(x=rev(term), y=-log10(over_represented_pvalue))) + 
+        	geom_point(stat='identity', aes(alpha=0.7), colour="#004488", size=5)  +
+        	coord_flip() + theme_bw() + ylab("-log10 BH-adjusted p-value") + xlab("GO Term") + 
+        	ggtitle(paste0("Enriched BP Go Terms, IC",dim)) + theme(legend.position = "none")) 
+      	dev.off()
+  }
+}
+
+
+# Each plot is showing an enriched, biological process (BP) GO term on the y axis, along with its BH-adjusted, -log10 pvalue on the y axis. In IC1, we can see the immune response being kickstarted by activation of leokocytes/immune cells (myeloid cell activation involved in immune response, granulocyte activation, neutrophil activation, leukocyte activation involved in immune response, cell activation involved in immune response, etc.) In IC2, we can see immune-related processes, but this time in the context of cell activation, cell movement, and cell proliferation. In IC3, we see many biological porcesses involved in chemical reactions and pathways involving heme. Heme is an essential cofactor for aerobic organisms, and in blood stages, [malaria parasites consume most of the hemoglobin inside infected erythrocytes](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4263882/). In IC4, we see many viral pathways (defense response to virus, regulation of viral genome replication, positive regulation of defense response to virus by host), and finally in IC5, we have no enriched GO terms. 
+
+# Now let's take a look at KEGG pathways.
+
+for(dim in 1:5){
+      gene.vector=as.integer(rownames(y) %in% names(contrib[[dim]]))
+      names(gene.vector)=rownames(y)
+      # KEGG pathway analysis
+      en2eg=as.list(org.Hs.egENSEMBL2EG)
+      # Get the mapping from Entrez 2 KEGG
+      eg2kegg=as.list(org.Hs.egPATH)
+      # Define a function which gets all unique KEGG IDs
+      # associated with a set of Entrez IDs
+      grepKEGG=function(id,mapkeys){unique(unlist(mapkeys[id],use.names=FALSE))}
+      # Apply this function to every entry in the mapping from ENSEMBL 2 Entrez to combine the two maps
+      kegg=lapply(en2eg,grepKEGG,eg2kegg)
+      # produce PWF as before
+      pwf=nullp(gene.vector,"hg19","ensGene", plot.fit=FALSE)
+      KEGG=goseq(pwf,gene2cat=kegg, use_genes_without_cat=TRUE)
+      enriched.GO.kegg=KEGG[p.adjust(KEGG$over_represented_pvalue, method="BH")<.05,]
+      if (nrow(enriched.GO.kegg) > 0){
+      	enriched.GO.kegg$category <- paste0("hsa",enriched.GO.kegg$category)
+        query <- keggGet(enriched.GO.kegg$category)
+        KEGG_Term <- lapply(1:length(enriched.GO.kegg$category), function(x) unname(query[[x]]$PATHWAY_MAP))
+        enriched.GO.kegg$Term <- unlist(KEGG_Term) 
+        print(enriched.GO.kegg$Term)
+      }
+      write.table(enriched.GO.kegg, file=paste0(outputdir,"EnrichedGOkegg_ContributingGenes_LFC0.05_dim",dim,".txt"))
+}
+
+# In IC1, we have "Cell adhesion molecules" as an enriched pathway. According to [KEGG](https://www.genome.jp/dbget-bin/www_bget?pathway+hsa04514): "Cell adhesion molecules (CAMs) are (glyco)proteins expressed on the cell surface and play a critical role in a wide array of biologic processes that include hemostasis, the immune response, inflammation, embryogenesis, and development of neuronal tissue." Interestingly, this is super important for malaria: "Adhesion of erythrocytes infected with Plasmodium falciparum to human cells has a key role in the pathogenesis of life-threatening malaria", as per this paper: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2878476/. 
+# In IC2, we see "Neuroactive ligand-receptor interaction", "Arrhythmogenic right ventricular cardiomyopathy", "Hematopoietic cell lineage", "Cytokine-cytokine receptor interaction", "Tryptophan metabolism", "Hypertrophic cardiomyopathy", "Protein digestion and absorption", and "Dilated cardiomyopathy". So I see two signals here from the KEGG pathways: heart-related myopathies, and cytokine activation. I really don't know what the heart signals could be from but here's some more info on teh cytokine response from [KEGG](https://www.google.com/search?client=firefox-b-d&biw=1807&bih=985&sxsrf=ALeKk03PS9YmgukUQdXocb4hD2qskN_BTw%3A1603859984190&ei=EPaYX8mQC83az7sPzrSX8AU&q=heart+myopathies&oq=heart+myopathies&gs_lcp=CgZwc3ktYWIQAzIGCAAQBxAeMgQIABAeMgYIABAIEB4yBggAEAgQHjIGCAAQCBAeOgQIABBHUMVBWMJEYOlGaABwAngBgAHWAogB4gqSAQUyLTMuMpgBAKABAaoBB2d3cy13aXrIAQjAAQE&sclient=psy-ab&ved=0ahUKEwjJ2IGFvNbsAhVN7XMBHU7aBV4Q4dUDCAw&uact=5): "Cytokines are released by various cells in the body, usually in response to an activating stimulus, and they induce responses through binding to specific receptors on the cell surface of target cells." 
+# In IC3, we have the malaria pathway being enriched, which matches up with the enrcihed heme signatures we were seeing in the GO analysis.
+# Finally in IC4, we have "Hepatitis C", "RIG-I-like receptor signaling pathway", and "Cytosolic DNA-sensing pathway". For the RIG signaling pathway, this is what [KEGG](https://www.genome.jp/dbget-bin/www_bget?hsa04622) says: "Specific families of pattern recognition receptors are responsible for detecting viral pathogens and generating innate immune responses. Non-self RNA appearing in a cell as a result of intracellular viral replication is recognized by a family of cytosolic RNA helicases termed RIG-I-like receptors (RLRs). The RLR proteins include RIG-I, MDA5, and LGP2 are expressed in both immune and nonimmune cells. Upon recognition of viral nucleic acids, RLRs recruit specific intracellular adaptor proteins to initiate signaling pathways that lead to the synthesis of type I interferon and other inflammatory cytokines, which are important for eliminating viruses." The Cytosolic DNA-sensing pathway and Hepatitis C pathways also suggest viral invasion.
+# No enriched KEGG pathways were found in IC5.
+
+
+#####################################
+# Association with sample variables #
+#####################################
+
+
+## Qualitative variable analysis -------------------------
+
+# It looks like we're getting some interesting signals, but now let's tie this together with our samples. One of the questions we're interested in asking is whether or not there's a difference between island populations in the genes they contribute to each IC. We can look at this by testing whether island populations are differently distributed on the components in terms of their contribution value.
+# Let's test this using a Kruskal-Wallis test.
+
+resQual <- qualVarAnalysis(params=params, icaSet=icaSetIndo, 
+                           keepVar=c("Island"),
+                           adjustBy="variable", doPlot=T,
+                           path="qualVarAnalysis/", typePlot="boxplot",filename="qualVar")
+
+for (i in 1:5){
+  IC=data.frame(A(icaSetIndo)[[i]],pData(icaSetIndo)[,"Island"])
+  colnames(IC)=c("Sample_Contribution","Island")
+  pval=unname(resQual["Island",][i])
+  pdf(paste0(outputdir,"IslandContribution_IC",i,".pdf"))
+  print(ggplot(IC, aes(x=Island,y=Sample_Contribution,fill=Island)) + geom_violin() + geom_boxplot(width=0.1) + labs(x = "Island", y = "Sample Contribution", subtitle=paste0("p = ",pval)) + theme_bw() + 
+  scale_fill_manual(values=c(MentawaiCol,SumbaCol,KorowaiCol)) +
+  ggtitle(paste0("Island Contributions in IC",i)))
+  dev.off()
+}
+
+# Neat, all of the ICs are significant after p-value adjustment for multiple testing. In IC1, we can see that the Korowai is negatively driving the signal. In IC2, Mentawai is positively driving the signal. In PC3, Sumba seems to be positively driving the signal, in IC4, Sumba (positively) and Korowai (negatively) are driving the signal, and in IC5, Korowai is positively driving the signal. 
+
+## Quantitative variable analysis -----------------------
+
+# Now we can perform a quantitative variable analysis on the pathogen load. Here, we'll compute the pearson correlation between pathogen load and the sample contributions and only report pathogens that have a BH adjusted p-value < 0.05. 
+
+resQuant <- quantVarAnalysis(params=params, icaSet=icaSetIndo, keepVar=c(colnames(OTUs)), 
+                             typeCor="pearson", cutoffOn="pval",
+                             cutoff=0.05, adjustBy="variable",  
+                             path="quantVarAnalysis/", filename="quantVar", doPlot=T)
+
+# The function resQuant saves all images to the path that you specify, so the results can't be seen here. However, I'll output the results for each significant pathogen in a heatmap. 
+
+pval <- resQuant$pval
+pval$Pathogen <- rownames(pval)
+melted_pval <- melt(pval)
+sig_pathogen <- unique(melted_pval[which(melted_pval$value <= 0.05),"Pathogen"])
+pval <- pval[sig_pathogen,]
+pval$Pathogen <- NULL
+
+# get Pearson correlation
+correlation <- resQuant$cor
+# write out table of all correlations
+write.table(correlation, file=paste0(outputdir,"AllPathogenCorrelations.txt"))
+correlation <- correlation[sig_pathogen,]
+# write out table of significant correlations
+write.table(correlation, file=paste0(outputdir,"significantPathogenCorrelations.txt"))
+
+# make a heatmap of the correlations
+melted=melt(correlation)
+melted_pval <- melt(pval)
+melted$pval <- melted_pval$value
+melted$significance <- ""
+melted[which(melted$pval<0.05),"significance"] <- "*"
+melted[which(melted$pval<0.01),"significance"] <- "**"
+melted[which(melted$pval<0.001),"significance"] <- "***"
+
+pdf(paste0(outputdir,"AllPathogenContributions.pdf"))
+ggplot(melted, aes(x=Var2, y=Var1, fill=value)) + geom_tile() + scale_fill_gradient2(low="#2C7BB6", mid="white", high="#D7191C") + geom_text(aes(label=significance), color="black", size=5) + theme_bw() + 
+  labs(x="IC", y="Taxa") + ggtitle("Pathogen load vs Sample Contributions")
+dev.off()
+
+# You can easily recreate the output with ggplot to see some of the results. Three pathogens - Plasmodium, Flavivirus and Chlamydieae - are significant in the majority of the ICs. My previous pathogen analysis showed that two pathogens, Flavivirus and Plasmodium, have a high pathogen load in these populations. Thereofre, output the results for both of these in each IC. 
+# First, let's look at Plasmodium.
+
+for (i in 1:5){
+  df=data.frame(A(icaSetIndo)[[i]],pData(icaSetIndo)[,"Eukaryota_unk_k_Apicomplexa"],rownames(A(icaSetIndo)))
+  colnames(df)=c("sample_contribution","plasmo_load", "sample")
+  df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+  pathogen="Plasmodium"
+  pdf(paste0(outputdir,"PlasmodiumContribution_IC",i,".pdf"), height = 8, width = 8)
+  print(ggplot(df, aes(x=sample_contribution, y=plasmo_load)) + 
+    geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "Sample Contribution", y = paste(pathogen, "Load", sep=" ")) +
+    geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle(paste0(pathogen,", IC",i)) + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) + 
+    scale_color_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +
+    stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
+  	dev.off()
+}
+
+# Plasmodium has a significant correlation in every single component, with ICs 1-4 having a significant negative correlation. 
+# If we look at the correlation plots, we can see that in the Korowai is driving the IC, where a higher plasmodium load correlates with a negative sample contribution (from the Korowai). 
+
+# If we tie this together with genes, we can look at some contributing genes in the dimensions correlated with malaria. Clearly IC3 is drivem by malaria, but I would say IC1 also has strong malaria-like signals. In my DE analysis, one of the genes with the highest DE signals was MARCO, a macrophage receptor gene involved in pathogen clearance. This is also one of the highest contributing genes to IC1. Let's plot the the density of this gene between island populations using the batch-corrected data.
+ICA_genes = batch.corrected.lcpm[c("ENSG00000019169"),]
+ICA_genes <- melt(ICA_genes)
+ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+pdf(paste0(outputdir,"MARCO_Batch_CorrectedData.pdf"))
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw(base_size = 18) + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+  geom_boxplot(width=0.1) + ylab("Batch-corrected CPM") + ggtitle("MARCO")
+dev.off()
+
+# In IC3, SLC4A1 is the gene with the highest contribution to the component. This gene is associated with Southeast Asian Ovalocytosis, a blood disorder common in Southeast Asia which us protective against malaria. Although this gene was not found to be DE from my previous study, let's plot the density of this gene between island populations using the batch-corrected data.
+
+ICA_genes = batch.corrected.lcpm[c("ENSG00000004939"),]
+ICA_genes <- melt(ICA_genes)
+ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+pdf(paste0(outputdir,"SLC4A1_Batch_CorrectedData.pdf"))
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw(base_size = 18) + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+  geom_boxplot(width=0.1) + ylab("Batch-corrected CPM") + ggtitle("SLC4A1")
+dev.off()
+
+# Now let's look into Flavivirus.
+
+for (i in 1:5){
+  df=data.frame(A(icaSetIndo)[[i]], pData(icaSetIndo)[,"Viruses_unk_k_unk_p"], rownames(A(icaSetIndo)))
+  colnames(df)=c("sample_contribution","virus_load", "sample")
+  df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+  pathogen="Flavivirus"
+  pdf(paste0(outputdir,"FlavivirusContribution_IC",i,".pdf"), height = 8, width = 8)
+  print(ggplot(df, aes(sample_contribution,virus_load)) + 
+  	geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "Sample Contribution", y = paste(pathogen, "Load", sep=" ")) +
+    geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle(paste0(pathogen,", IC",i)) + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) +
+    stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
+  dev.off()
+}
+
+
+# Again, let's look at driving genes. Very interestingly, RSAD2, which is [associated with Chikungunya virus and Yellow fever](https://www.genecards.org/cgi-bin/carddisp.pl?gene=RSAD2) (a Flavivirus), is the tope contributing gene. RSAD2 was also a significantly DE gene in DE analysis between the populations. 
+
+ICA_genes = batch.corrected.lcpm[c("ENSG00000134321"),]
+ICA_genes <- melt(ICA_genes)
+ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+pdf(paste0(outputdir,"RSAD2_Batch_CorrectedData.pdf"))
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw(base_size = 18) + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+  geom_boxplot(width=0.1) + ylab("Batch-corrected CPM") + ggtitle("RSAD2")
+dev.off()
+
+# Finally, make a plot of major contributing genes to each component
+ICA_genes = batch.corrected.lcpm[c("ENSG00000019169","ENSG00000274736","ENSG00000004939","ENSG00000134321","ENSG00000198178"),]
+ICA_genes <- melt(ICA_genes)
+ICA_genes$dim <- NA
+ICA_genes[which(ICA_genes$Var1 == "ENSG00000019169"),"dim"] <- 1
+ICA_genes[which(ICA_genes$Var1 == "ENSG00000274736"),"dim"] <- 2
+ICA_genes[which(ICA_genes$Var1 == "ENSG00000004939"),"dim"] <- 3
+ICA_genes[which(ICA_genes$Var1 == "ENSG00000134321"),"dim"] <- 4
+ICA_genes[which(ICA_genes$Var1 == "ENSG00000198178"),"dim"] <- 5
+ICA_genes$Island <- sapply(strsplit(as.character(ICA_genes$Var2), "[-.]"), `[`, 1)
+
+# make labeller for facet titles
+counter=0
+gene_names <- list()
+for (name in levels(ICA_genes$Var1)) {
+  counter=counter+1
+  gene_names[[name]]=y[name,]$genes$SYMBOL
+}
+
+gene_labeller <- function(variable,value){
+  return(gene_names[value])
+}
+
+pdf(paste0(outputdir,"ContributinGenes_EachComponent_CorrectedData.pdf"), height=10)
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw() + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+  geom_boxplot(width=0.1) + ylab("Batch-corrected CPM") + facet_wrap(~dim, scales = "free", ncol=1, labeller=gene_labeller)
+dev.off()
+
+# Lastly, load in voom object and replot genes
+load(paste0(inputdir, "DE_Island/LM_allCovarPlusBlood/vDup.Rda"))
+
+# MARCO -----------------------------------
+ICA_genes = vDup$E[c("ENSG00000019169"),]
+ICA_genes <- melt(ICA_genes)
+ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+pdf(paste0(outputdir,"MARCO_VoomData.pdf"), height = 8, width = 8)
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw(base_size = 26) + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+  geom_boxplot(width=0.1) + ylab("CPM") + ggtitle("MARCO") + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) 
+dev.off()
+
+# SLC4A1 -----------------------------------
+ICA_genes = vDup$E[c("ENSG00000004939"),]
+ICA_genes <- melt(ICA_genes)
+ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+pdf(paste0(outputdir,"SLC4A1_VoomData.pdf"), height = 8, width = 8)
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw(base_size = 26) + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+  geom_boxplot(width=0.1) + ylab("CPM") + ggtitle("SLC4A1") + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) 
+dev.off()
+
+# RSAD2 -----------------------------------
+ICA_genes = vDup$E[c("ENSG00000134321"),]
+ICA_genes <- melt(ICA_genes)
+ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+pdf(paste0(outputdir,"RSAD2_Batch_VoomData.pdf"), height = 8, width = 8)
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw(base_size = 26) + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+  geom_boxplot(width=0.1) + ylab("CPM") + ggtitle("RSAD2") + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) 
+dev.off()
+
+

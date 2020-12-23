@@ -14,6 +14,14 @@ batchInfodir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Su
 forward_strand <- read.csv(paste0(inputdir,"Counts_Indo_AllReads_SE.csv"),check.names=FALSE)
 reverse_strand <- read.csv(paste0(inputdir,"Counts_Indo_AllReads_SE_ReverseRead.csv"),check.names=FALSE)
 
+# set ggplot colour theme to white
+theme_set(theme_bw())
+
+# Set up colour schemes
+KorowaiCol="#F21A00"
+MentawaiCol="#3B9AB2"
+SumbaCol="#EBCC2A"
+
 #############################
 # Analysis of dissimilarity #
 #############################
@@ -48,11 +56,12 @@ for (rank in taxonomicRanks){
 dissimilarityDF$nDissimilar=as.numeric(dissimilarityDF$nDissimilar)
 dissimilarityDF$percDissimilar=as.numeric(dissimilarityDF$percDissimilar)
 # order factors
-dissimilarityDF$taxonomicRank <- factor(dissimilarityDF$taxonomicRank, levels = taxonomicRanks)
+dissimilarityDF$taxonomicRank <- factor(dissimilarityDF$taxonomicRank, levels = rev(taxonomicRanks))
 
-# Make violin plot
-pdf(paste0(outputdir,"ForwardStrand_Vs_RevereseStrand_Similarity.pdf"), height = 8, width = 10)
-ggboxplot(dissimilarityDF, x = "taxonomicRank", y = "percDissimilar", fill="taxonomicRank",add=c("boxplot"))
+# Make boxplots
+pdf(paste0(outputdir,"ForwardStrand_Vs_RevereseStrand_Similarity.pdf"), height = 8, width = 12)
+ggplot(dissimilarityDF, aes(x =taxonomicRank, y =percDissimilar, fill=taxonomicRank)) + geom_boxplot(alpha=0.8) + ylab("Percent Dissimilar") +
+  xlab("Taxonomic Rank") + theme_bw(base_size = 18) + scale_fill_discrete(name = "Taxonomic Rank")
 dev.off()
 
 # Using phyloseq
@@ -79,7 +88,6 @@ samples = sample_data(samples_df)
 rownames(samples)=samples$SampleName
 sample_data(forward) <- samples
 taxa_names(forward) <- paste(tax_table(forward)[,"Superkingdom"], tax_table(forward)[,"Kingdom"], tax_table(forward)[,"Phylum"], tax_table(forward)[,"Class"], tax_table(forward)[,"Order"], tax_table(forward)[,"Family"], tax_table(forward)[,"Genus"], tax_table(forward)[,"Species"], sep="_")
-
 
 # reverse strand
 taxa_raw <- as.matrix(reverse_strand[,c("Superkingdom","Kingdom","Phylum", "Class", "Order","Family","Genus","Species")])
@@ -116,54 +124,44 @@ for (taxa in taxaNames){
   diag(diff)=NA
   b=melt(diff)
   b$Variability=NA
-  b[which(is.na(b$value)),"Variability"]="within"
-  b[which(!is.na(b$value)),"Variability"]="between"
+  b[which(is.na(b$value)),"Variability"]="Within"
+  b[which(!is.na(b$value)),"Variability"]="Between"
   b[which(is.na(b$value)),"value"]=same
   b$taxa=taxa
   taxa_summary=rbind(taxa_summary, b)
 }
-
+# assign taxa as a factor for proper ordering
 taxa_summary$taxa <- factor(taxa_summary$taxa, levels = taxaNames)
-pdf(paste0(outputdir,"ForwardStrand_Vs_RevereseStrand_Correlation.pdf"), height = 8, width = 10)
+
+pdf(paste0(outputdir,"ForwardStrand_Vs_RevereseStrand_Correlation.pdf"), height = 8, width = 12)
 ggplot(taxa_summary, aes(x=taxa, y=value, fill=Variability)) +
-  geom_boxplot() + theme_bw() + ylab("Spearman pairwise correlation") +
-  theme(axis.title.x=element_blank()) + scale_fill_brewer(palette="BrBg")
+  geom_boxplot(alpha=0.6) + theme_bw(base_size = 18) + ylab("Spearman pairwise correlation") + xlab("Taxonomic Rank") +
+  scale_fill_manual(values=c("#332288","#44AA99"), name = "Correlation")
 dev.off()
 
 # Look at beta diversity plots
 
 # First, regular PCA plot
 ps4.rel <- microbiome::transform(merged_phylo_counts, "clr")
-# RDA without constraints is PCA        
-bx.ord_pcoa_bray <- ordinate(ps4.rel, "RDA")
+# PCoA by Euclidean distance is PCA        
+ord <- ordinate(ps4.rel, method = "PCoA", distance = "euclidean")
 
-# Make an ordination plot using bray's dissimilarity
-beta.ps1 <- plot_ordination(ps4.rel, 
-                            bx.ord_pcoa_bray, 
-                            color="batch", 
-                            label = "SampleName") + 
-  geom_point(aes(), size= 4) + 
-  theme(plot.title = element_text(hjust = 0, size = 12))
-
-# add in an ellipse
-pdf(paste0(outputdir,"ForwardStrand_Vs_BetaDiversity.pdf"), height = 8, width = 10)
-beta.ps1 + stat_ellipse() + theme_bw(base_size = 14) + 
-  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+pdf(paste0(outputdir,"Forward_vs_RevereStrand_PCA_Batch.pdf"), height = 8, width = 10)
+plot_ordination(ps4.rel, ord, color="batch", label = "SampleName") + 
+  geom_point(aes(), size= 4) + theme_bw(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0, size = 12), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_colour_manual(values=c("#cb54d6","#3d45c4","black"))
 dev.off()
 
-# Or by bray distance dissimilarity
+# Make an ordination plot using bray's dissimilarity
 ps4.rel <- microbiome::transform(merged_phylo_counts, "compositional")
 bx.ord_pcoa_bray <- ordinate(ps4.rel, "PCoA", "bray")
-# Make an ordination plot using bray's dissimilarity
-beta.ps1 <- plot_ordination(ps4.rel, 
-                            bx.ord_pcoa_bray, 
-                            color="batch", 
-                            label = "SampleName") + 
-  geom_point(aes(), size= 4) + 
-  theme(plot.title = element_text(hjust = 0, size = 12))
 
-# add in an ellipse
-pdf(paste0(outputdir,"ForwardStrand_Vs_BetaDiversity.pdf"), height = 8, width = 10)
-beta.ps1 + stat_ellipse() + theme_bw(base_size = 14) + 
-  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+# Plot
+pdf(paste0(outputdir,"ForwardStrand_Vs_BetaDiversity_BrayCurtis.pdf"), height = 8, width = 10)
+plot_ordination(ps4.rel, bx.ord_pcoa_bray, color="SamplePop", label = "SampleName",  axes = 1:2) + 
+  geom_point(aes(), size= 4, alpha = 0.6) + theme_bw(base_size = 14) + 
+  theme(plot.title = element_text(hjust = 0, size = 12), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_colour_manual(values=c("#332288","#44AA99"))
 dev.off()
+

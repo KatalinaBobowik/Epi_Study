@@ -51,6 +51,7 @@ library(mixOmics)
 library(SRS)
 library(ggrepel)
 library(DivNet)
+library(zCompositions)
 
 # set up directories
 refdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/ReferenceFiles/EpiStudy/"
@@ -146,7 +147,7 @@ sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_Prefilter = SeqDepth_Prefilt
 AllREadsSE_Indo_Counts_physeq
 ```
 
-We now have a phyloseq object of 117 samples and 2,755 taxa.
+We now have a phyloseq object of 117 samples and 2,763 taxa.
 
 # Data processing
 
@@ -289,92 +290,128 @@ Unfortunately, one of the disadvantages to using CLR-transformed data is that it
 
 Becasue CLR data is an informative measure of our data, I'll first explore sample grouping using this method.
 
-The first step to performing a CLR transformation on the data is to add an offset of 1 to the counts. This is necessary, since performing a log on 0 values is undefined. We'll then perform a log ratio transformation of the data using the mixOmics package.
+CLR transformation is quite sensitive to zeros, so we need to remove as many zeros as we can before performing CLR transformation. We'll do this by merging our taxa data at the phylum level.
+
+We'll then add an offset of 1, then use the microbiome package from Bioconducto to perform CLR-transformation.
 
 ```{r, message = FALSE, warning = FALSE}
-offset_otu=otu_table(AllREadsSE_Indo_Counts_physeq)+1
-transform_counts=t(otu_table(offset_otu))
-data_clr <- logratio.transfo(as.matrix(transform_counts), logratio = 'CLR', offset = 0) 
+
+pop_comparison <- AllREadsSE_Indo_Counts_physeq %>%
+  tax_glom("Phylum")
+
+data_offset <- otu_table(pop_comparison) + 1
+clr <- microbiome::transform(data_offset, "clr")
+
+# add in compositions information to new phyloseq object
+merged_phylo_counts_clr <- pop_comparison
+taxa <- otu_table(clr, taxa_are_rows = TRUE)
+otu_table(merged_phylo_counts_clr) <- taxa
+
 ```
 
 ### Sample grouping/beta diversity
 
-Now that we've transformed our data, we can make a PCA plot to see how each sample clusters. The current obect we have is a CLR-class object. You can plot this type of data object easily with mixOmics, however I prefer the visualisation that phyloseq offers (you can't alter the PCA plots that much in mixOmics). So, we'll turn the clr object back into a phyloseq object and make an ordination plot of the data.
+Now that we've transformed our data, we can make a PCA plot to see how each sample clusters. 
 
 !Note: When Euclidean distances are used in PCoA plots, it is [equivalent to a PCA plot](http://ordination.okstate.edu/overview.htm). 
 
 ```{r, message = FALSE, warning = FALSE, fig.height = 8, fig.width = 8, fig.align = "center"}
-# Make a duplicated phyloseq object to use for plotting
-class(data_clr)="matrix"
-taxa = otu_table(t(data_clr), taxa_are_rows = TRUE)
-AllREadsSE_Indo_Counts_physeq_clr=AllREadsSE_Indo_Counts_physeq
-otu_table(AllREadsSE_Indo_Counts_physeq_clr)=taxa
-
-# calculat Euclidean distances
-out.wuf.log <- ordinate(AllREadsSE_Indo_Counts_physeq_clr, method = "PCoA", distance = "euclidean")
-# plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="SamplePop", axes = 1:2, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
 
 # Make an ordination plot using euclidean distances
-beta.ps1 <- plot_ordination(ArrllREadsSE_Indo_Counts_physeq_clr, 
-                            out.wuf.log, 
-                            color="SamplePop", 
-                            label = "SampleName") + 
-  geom_point(aes(), size= 4) + 
-  theme(plot.title = element_text(hjust = 0, size = 12))
+ord <- ordinate(merged_phylo_counts_clr, method = "PCoA", distance = "euclidean")
 
-# add in an ellipse
-beta.ps1 + stat_ellipse() + theme_bw(base_size = 14) + 
-  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-  scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
-
-
+# plot by Island
+plot_ordination(merged_phylo_counts_clr, ord, color="SamplePop", axes = 1:2, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12))
+plot_ordination(merged_phylo_counts_clr, ord, color="SamplePop", axes = 2:3, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12))
+plot_ordination(merged_phylo_counts_clr, ord, color="SamplePop", axes = 3:4, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12))
+plot_ordination(merged_phylo_counts_clr, ord, color="SamplePop", axes = 4:5, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12))
 ```
 
-In the first principal component, there isn't any clear grouping by island, but you can see some samples clustering away from the majority of the samples. These are samples with a high Plasmodium load. Let's highlight each sample by Plasmodium load (on the log scale for easier visualisation).
+We can see a lot of the Korowai samples grouping away from the other samples in the first PC. Let's take a look closer by taxa.
+
+First by Plasmodium load.
 
 ```{r, message = FALSE, warning = FALSE, fig.height = 8, fig.width = 8, fig.align = "center"}
+
+# plot by plasmodium load
 logged_phyla_counts = log10(colSums(otu_table(AllREadsSE_Indo_Counts_physeq)[grep("Apicomplexa",tax_table(AllREadsSE_Indo_Counts_physeq)[,"Phylum"])])+1)
-sample_data(AllREadsSE_Indo_Counts_physeq_clr)[["Apicomplexa"]] = logged_phyla_counts
-out.wuf.log <- ordinate(AllREadsSE_Indo_Counts_physeq_clr, method = "PCoA", distance = "euclidean")
-plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="Apicomplexa", axes = 1:2, label="SampleName")
-
+sample_data(merged_phylo_counts_clr)[["Apicomplexa"]] = logged_phyla_counts
+ord <- ordinate(merged_phylo_counts_clr, method = "PCoA", distance = "euclidean")
+plot_ordination(merged_phylo_counts_clr, ord, color="Apicomplexa", axes = 1:2, label="SampleName") + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#FFCCBB","#800026"))(10), limits=c(1, 6))
+plot_ordination(merged_phylo_counts_clr, ord, color="Apicomplexa", axes = 2:3, label="SampleName") + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#FFCCBB","#800026"))(10), limits=c(1, 6))
+plot_ordination(merged_phylo_counts_clr, ord, color="Apicomplexa", axes = 3:4, label="SampleName") + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#FFCCBB","#800026"))(10), limits=c(1, 6))
+plot_ordination(merged_phylo_counts_clr, ord, color="Apicomplexa", axes = 4:5, label="SampleName") + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#FFCCBB","#800026"))(10), limits=c(1, 6))
 ```
-
-Here, you can now see lighter blue samples (high Plasmodium load) separating away from darker blue samples (no Plasmodium load).
-
-Let's look at a few more dimensions in the PCA to see if any clustering stands out.
+Now by Flavivirus load.
 
 ```{r, message = FALSE, warning = FALSE, fig.height = 8, fig.width = 8, fig.align = "center"}
-out.wuf.log <- ordinate(AllREadsSE_Indo_Counts_physeq_clr, method = "PCoA", distance = "euclidean")
-plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="SamplePop", axes = 2:3, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
-plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="SamplePop", axes = 3:4, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
-plot_ordination(AllREadsSE_Indo_Counts_physeq_clr, out.wuf.log, color="SamplePop", axes = 4:5, label="SampleName") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
 
+# plot by Flavivirus load
+logged_phyla_counts_flavivirus = log10(colSums(otu_table(AllREadsSE_Indo_Counts_physeq)[grep("Viruses",tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"])])+1)
+sample_data(merged_phylo_counts_clr)[["Flavivirus"]] = logged_phyla_counts_flavivirus
+ord <- ordinate(merged_phylo_counts_clr, method = "PCoA", distance = "euclidean")
+plot_ordination(merged_phylo_counts_clr, ord, color="Flavivirus", axes = 1:2, label="SampleName") + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#78c679","#006837"))(20), limits=c(1, 4))
+plot_ordination(merged_phylo_counts_clr, ord, color="Flavivirus", axes = 2:3, label="SampleName") + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#78c679","#006837"))(20), limits=c(1, 4))
+plot_ordination(merged_phylo_counts_clr, ord, color="Flavivirus", axes = 3:4, label="SampleName") + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#78c679","#006837"))(20), limits=c(1, 4))
+plot_ordination(merged_phylo_counts_clr, ord, color="Flavivirus", axes = 4:5, label="SampleName") + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#78c679","#006837"))(20), limits=c(1, 4))
+```
+
+We can also see this isn't caused by batch.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 8, fig.width = 8, fig.align = "center"}
+
+# plot by batch
+plot_ordination(merged_phylo_counts_clr, ord, color="batch", axes = 1:2, label="SampleName") + scale_colour_manual(values=c("#cb54d6","#3d45c4","black")) + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12))
+plot_ordination(merged_phylo_counts_clr, ord, color="batch", axes = 2:3, label="SampleName") + scale_colour_manual(values=c("#cb54d6","#3d45c4","black")) + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12))
+plot_ordination(merged_phylo_counts_clr, ord, color="batch", axes = 3:4, label="SampleName") + scale_colour_manual(values=c("#cb54d6","#3d45c4","black")) + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12))
+plot_ordination(merged_phylo_counts_clr, ord, color="batch", axes = 4:5, label="SampleName") + scale_colour_manual(values=c("#cb54d6","#3d45c4","black")) + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12))
 ```
 
 Finally, let's see how sample grouping looks like by another clustering method - hierarchical clustering by Euclidean distance. Again, this is done on the CLR-transformed data to correct for sequencing depth.
 
-```{r, message = FALSE, fig.height = 7, fig.width = 12, fig.align = "center"}
-ps_otu <- data.frame(phyloseq::otu_table(AllREadsSE_Indo_Counts_physeq_clr))
+```{r, message = FALSE, warning = FALSE, fig.height = 8, fig.width = 8, fig.align = "center"}
+
+ps_otu <- data.frame(phyloseq::otu_table(merged_phylo_counts_clr))
 ps_otu <- t(ps_otu)
 bc_dist <- vegan::vegdist(ps_otu, method = "euclidean")
 ward <- as.dendrogram(hclust(bc_dist, method = "ward.D2"))
 #Provide color codes
-meta <- data.frame(phyloseq::sample_data(AllREadsSE_Indo_Counts_physeq_clr))
+meta <- data.frame(phyloseq::sample_data(merged_phylo_counts_clr))
 colorCode <- c(MPI = KorowaiCol, `MTW` = MentawaiCol, `SMB` = SumbaCol)
 labels_colors(ward) <- colorCode[meta$SamplePop][order.dendrogram(ward)]
 #Plot
-plot(ward)
+plot(ward, main="Island")
 
 # Label colours by Plasomodium load
 initial = .bincode(meta$Apicomplexa, breaks=seq(min(meta$Apicomplexa, na.rm=T), max(meta$Apicomplexa, na.rm=T), len = 80),include.lowest = TRUE)
-plasmoCol <- colorRampPalette(c("darkblue", "lightblue"))(79)[initial]
+plasmoCol <- colorRampPalette(c("darkblue", "red", "firebrick"))(80)[initial]
 labels_colors(ward)=plasmoCol[order.dendrogram(ward)]
-plot(ward)
+plot(ward, main="Plasmodium")
+
+# Label colours by Flavivirus load
+ps_otu <- data.frame(phyloseq::otu_table(merged_phylo_counts_clr))
+ps_otu <- t(ps_otu)
+bc_dist <- vegan::vegdist(ps_otu, method = "euclidean")
+ward <- as.dendrogram(hclust(bc_dist, method = "ward.D2"))
+#Provide color codes
+meta <- data.frame(phyloseq::sample_data(merged_phylo_counts_clr))
+initial = .bincode(meta$Flavivirus, breaks=seq(min(meta$Flavivirus, na.rm=T), max(meta$Flavivirus, na.rm=T), len = 80),include.lowest = TRUE)
+flavoCol <- colorRampPalette(c("darkblue", "#78c679","#006837"))(79)[initial]
+labels_colors(ward)=flavoCol[order.dendrogram(ward)]
+plot(ward, main="Flavivirus")
+
+# or, to view it in another way
+fviz_dend(ward, k = 4,                 # Cut in four groups
+          cex = 0.5,                 # label size
+          k_colors = c("#616161", "#78c679", "#b20000","#800026"),
+          color_labels_by_k = TRUE,  # color labels by groups
+          ggtheme = theme_bw(),     # Change theme
+          main = ""
+          )
 
 ```
 
-In the PCA and hierarchical clustering, there is no obvious clustering by island, however some samples do cluster by plasmodium load.
+We can see that Flavivirus and Plasmodium have an effect on expression profiles. This is most strongly seen in the Korowai.
 
 # Relative frequency of taxa
 
@@ -419,9 +456,9 @@ families=levels(p$data$Superkingdom)
 table(sapply(strsplit(families, "[_.]"), `[`, 1))
 
 PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(14)
-PaletteEukaryote = colorRampPalette(c("#fd8d3c","#800026"))(3)
+PaletteEukaryote = c("#4c0000","#b20000","#ff4c4c")
 PaletteOther = colorRampPalette(c("black"))(1)
-PaletteUnk = colorRampPalette(c("black"))(1)
+PaletteUnk = colorRampPalette(c("#5a5a5a"))(1)
 PaletteVirus = colorRampPalette(c("#78c679","#006837"))(2)
 
 Merged_Palette <- c(PaletteBacteria,PaletteEukaryote,PaletteOther,PaletteUnk,PaletteVirus)
@@ -441,9 +478,17 @@ Although it's not very easy to visualise (and I haven't seen these barplots in a
 ```{r, message = FALSE, fig.height = 7, fig.width = 15, fig.align = "center"}
 aggregated_phyloCounts <- aggregate_top_taxa(AllREadsSE_Indo_Counts_physeq, "Superkingdom", top = 20)
 # transform to relative counts
-relative_phyloCounts <- microbiome::transform(aggregated_phyloCounts, "clr")
+zComposition_estimate <- cmultRepl(abundances(aggregated_phyloCounts), method = "CZM")
+zComposition_clr <- microbiome::transform(zComposition_estimate, "clr")
+
+# add in zCompositions information to new phyloseq object
+taxa_zComposition <- otu_table(zComposition_clr, taxa_are_rows = TRUE)
+relative_phyloCounts <- aggregated_phyloCounts
+otu_table(relative_phyloCounts) <- taxa_zComposition
+
 # Remove weird extra family names added at the end of Superkingdom names
 tax_table(relative_phyloCounts)[,"Superkingdom"] <- paste(sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 1), sapply(strsplit(taxa_names(relative_phyloCounts), "[_.]"), `[`, 2), sep="_")
+
 # Change "Other_NA" to just "Other"
 tax_table(relative_phyloCounts)[,"Superkingdom"][grep("Other", taxa_names(relative_phyloCounts))] = "Other"
 
@@ -455,10 +500,10 @@ families=levels(p$data$Superkingdom)
 # get number of families in each kingdom
 table(sapply(strsplit(families, "[_.]"), `[`, 1))
 
-PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(14)
-PaletteEukaryote = colorRampPalette(c("#fd8d3c","#800026"))(3)
+PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(13)
+PaletteEukaryote = colorRampPalette(c("#800026","#4c0000","#b20000","#ff4c4c"))(4)
 PaletteOther = colorRampPalette(c("black"))(1)
-PaletteUnk = colorRampPalette(c("black"))(1)
+PaletteUnk = colorRampPalette(c("#5a5a5a"))(1)
 PaletteVirus = colorRampPalette(c("#78c679","#006837"))(2)
 
 Merged_Palette <- c(PaletteBacteria,PaletteEukaryote,PaletteOther,PaletteUnk,PaletteVirus)
@@ -585,11 +630,11 @@ Since Aldex2 works by comparing two datasets, we need to subset the datasets int
 ```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 14, fig.align = "center"}
 
 # Differential abundance testing
-MPIVsMTW=subset_samples(AllREadsSE_Indo_Counts_physeq, SamplePop != "SMB")
+MPIVsMTW=subset_samples(pop_comparison, SamplePop != "SMB")
 any(taxa_sums(MPIVsMTW) == 0)
 # remove any 0s from the data
 MPIVsMTW <- prune_taxa(taxa_sums(MPIVsMTW) > 0, MPIVsMTW)
-taxa_names(MPIVsMTW)=make.unique(tax_table(MPIVsMTW)[,"Family"])
+taxa_names(MPIVsMTW)=make.unique(tax_table(MPIVsMTW)[,"Phylum"])
 # Run aldex2
 aldex2_MPIVsMTW <- ALDEx2::aldex(data.frame(phyloseq::otu_table(MPIVsMTW)), phyloseq::sample_data(MPIVsMTW)$SamplePop, test="t", effect = TRUE)
 
@@ -599,33 +644,38 @@ sig_aldex2_MPIVsMTW <- aldex2_MPIVsMTW %>%
   arrange(effect, wi.eBH) %>%
   dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
 
+sig_aldex2_MPIVsMTW
+
 ```
 
-After running Aldex2 on the Korowai versus the Mentawai, we can see that nothing significant remains. Now let's run it on the Korowai versus people from the island of Sumba.
+After running Aldex2 on the Korowai versus the Mentawai, we can see that there is a difference in Plasmodium load.
 
 ```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 14, fig.align = "center"}
 
-MPIVsSMB=subset_samples(AllREadsSE_Indo_Counts_physeq, SamplePop != "MTW")
+MPIVsSMB=subset_samples(pop_comparison, SamplePop != "MTW")
 any(taxa_sums(MPIVsSMB) == 0)
 MPIVsSMB <- prune_taxa(taxa_sums(MPIVsSMB) > 0, MPIVsSMB)
-taxa_names(MPIVsSMB)=make.unique(tax_table(MPIVsSMB)[,"Family"])
+taxa_names(MPIVsSMB)=make.unique(tax_table(MPIVsSMB)[,"Phylum"])
 aldex2_MPIVsSMB <- ALDEx2::aldex(data.frame(phyloseq::otu_table(MPIVsSMB)), phyloseq::sample_data(MPIVsSMB)$SamplePop, test="t", effect = TRUE)
 sig_aldex2_MPIVsSMB <- aldex2_MPIVsSMB %>%
   rownames_to_column(var = "OTU") %>%
   filter(wi.eBH < 0.05) %>%
   arrange(effect, wi.eBH) %>%
   dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
+
+sig_aldex2_MPIVsSMB
+
 ```
 
-Again, there is nothing significant between the Korowai and people from the island of Sumba. Finally, let's test if there are differentially abundant taxa in Mentawai versus people from the island of Sumba.
+Again, there is a significant difference between the Korowai and people from the island of Sumba in Plasmodium load. Finally, let's test if there are differentially abundant taxa in Mentawai versus people from the island of Sumba.
 
 
 ```{r, message = FALSE, warning = FALSE, fig.height = 10, fig.width = 14, fig.align = "center"}
 
-MTWVsSMB=subset_samples(AllREadsSE_Indo_Counts_physeq, SamplePop != "MPI")
+MTWVsSMB=subset_samples(pop_comparison, SamplePop != "MPI")
 any(taxa_sums(MTWVsSMB) == 0)
 MTWVsSMB <- prune_taxa(taxa_sums(MTWVsSMB) > 0, MTWVsSMB)
-taxa_names(MTWVsSMB)=make.unique(tax_table(MTWVsSMB)[,"Family"])
+taxa_names(MTWVsSMB)=make.unique(tax_table(MTWVsSMB)[,"Phylum"])
 aldex2_MTWVsSMB <- ALDEx2::aldex(data.frame(phyloseq::otu_table(MTWVsSMB)), phyloseq::sample_data(MTWVsSMB)$SamplePop, test="t", effect = TRUE)
 sig_aldex2_MTWVsSMB <- aldex2_MTWVsSMB %>%
   rownames_to_column(var = "OTU") %>%
@@ -633,9 +683,11 @@ sig_aldex2_MTWVsSMB <- aldex2_MTWVsSMB %>%
   arrange(effect, wi.eBH) %>%
   dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
 
+sig_aldex2_MTWVsSMB
+
 ```
 
-As in the rest of the island comparisons, there are no statistically significant differentially abundant taxa.
+There are no statistically significant differentially abundant taxa.
 
 # Alpha diversity
 
