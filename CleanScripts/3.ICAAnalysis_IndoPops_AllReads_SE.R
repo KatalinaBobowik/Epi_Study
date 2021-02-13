@@ -98,7 +98,6 @@ for (name in colnames(OTUs)){
   y$samples[[paste0(name)]]<- OTUs[,name]
 }
 
-
 ## Get batch-corrected data ----------------------
 
 # We want batch-corrected expression data (that is, regressing out batch, age, RIN, and blood cell type). We'll do this by using the removeBatchEffect function from Limma.
@@ -138,11 +137,19 @@ pca.var <- pca$sdev^2/sum(pca$sdev^2)
 var_explained_df <- data.frame(PC=paste0("PC",1:length(pca$sdev)), var_explained=pca.var)
 var_explained_df$PC <- factor(var_explained_df$PC, levels=var_explained_df$PC)
 
-pdf(paste0(outputdir,"VarianceExplained_PCA.pdf"))
+pdf(paste0(outputdir,"VarianceExplained_PCA.pdf"), width = 15)
 ggplot(var_explained_df, aes(x=PC, y=cumsum(var_explained))) + geom_line() + geom_point(size=4) +
-	labs(title="Scree plot: PCA on scaled data") +
-	theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+	labs(title="Scree plot: PCA on scaled data") + theme_bw() + 
+	theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ylab("Variance explained")
 dev.off()
+
+# replot but not cumulatively
+pdf(paste0(outputdir,"VarianceExplained_PCA_notCumulative_PC1to20.pdf"), width = 15)
+ggplot(var_explained_df[c(1:20),], aes(x=PC, y=var_explained)) + geom_line() + geom_point(size=4) +
+	labs(title="Scree plot: PCA on scaled data") + theme_bw() + 
+	theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ylab("Variance explained")
+dev.off()
+
 
 # We can see that the first 5 PCs capture the most variance (18% in PC1 down to 3.5% in PC5). All PCs after that contribute to a very small amount of variance (less than 3%). We'll therefore choose 5 independent components.
 
@@ -202,7 +209,9 @@ dev.off()
 contrib <- selectContrib(icaSetIndo, cutoff=3, level="genes")
 # sav eeach contributing genes file individually
 for (item in names(contrib)) { 
-	write.table(contrib[[item]], file=paste0(outputdir,"ContributingGenes_",item,".txt"), row.names=T, col.names=F)
+	contrib_genes_df = data.frame(y[names(contrib[[item]]),]$genes$ENSEMBL, y[names(contrib[[item]]),]$genes$SYMBOL, contrib[[item]])
+	colnames(contrib_genes_df) = c("ENSEMBL_ID", "Gene_Symbol", "Gene_Projection")
+	write.table(contrib_genes_df, file=paste0(outputdir,"ContributingGenes_",item,".txt"), row.names=F, col.names=T, sep="\t")
 }
 
 # save contributing genes file
@@ -263,9 +272,9 @@ colnames(resW$listAnnotComp[[1]])
 # One thing we might want to know is what the overlap is between differentially expressed genes we previously found in study one versus genes contributing to each component in the IC analysis. Let's do that by getting all genes from the DE analysis. We'll only get genes which are DE at an adjusted p-value of 0.05 and no log fold change threshold.
 
 # Get DE genes for each island
-SMBvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_SMBvsMPI.txt")
-MTWvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_MTWvsMPI.txt")
-SMBvsMTW=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_SMBvsMTW.txt")
+SMBvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_SMBvsMPI.txt", header = T)
+MTWvsMPI=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_MTWvsMPI.txt", header = T)
+SMBvsMTW=read.table("/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/DE_Analysis/123_combined/DE_Island/LM_allCovarPlusBlood/topTable_SMBvsMTW.txt", header = T)
 
 # Now let's see the percentage of overlap for each IC.
 
@@ -314,56 +323,6 @@ for (dim in c(1:5)){
   write.table(SMBvsMTW_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_SMBvsMTW_LFC0_IC",dim,".txt"))
 }
 
-# Only get genes with a LFC of one and a pvalue of 0.05
-SMBvsMPI_genes=rownames(SMBvsMPI)[which(abs(SMBvsMPI$logFC) >= 1)]
-MTWvsMPI_genes=rownames(MTWvsMPI)[which(abs(MTWvsMPI$logFC) >= 1)]
-SMBvsMTW_genes=rownames(SMBvsMTW)[which(abs(SMBvsMTW$logFC) >= 1)]
-
-# get barplots of proportion of contributing genes in each IC
-contributingGenes=matrix(nrow=3,ncol=5)
-rownames(contributingGenes)=c("SMBvsMPI","MTWvsMPI","SMBvsMTW")
-colnames(contributingGenes)=c("IC1","IC2","IC3","IC4","IC5")
-for (i in 1:5){
-  contributingGenes["SMBvsMPI",i]=length(contrib[[i]][which(names(contrib[[i]]) %in% SMBvsMPI_genes)])
-  contributingGenes["MTWvsMPI",i]=length(contrib[[i]][which(names(contrib[[i]]) %in% MTWvsMPI_genes)])
-  contributingGenes["SMBvsMTW",i]=length(contrib[[i]][which(names(contrib[[i]]) %in% SMBvsMTW_genes)])
-}
-contributingGenes=as.data.frame(contributingGenes)
-contributingGenes$type="contribGenes"
-contributingGenes$Island=rownames(contributingGenes)
-
-# add in DE genes
-deGenes=do.call("cbind", replicate(5, c(length(SMBvsMPI_genes),length(MTWvsMPI_genes),length(SMBvsMTW_genes)), simplify = FALSE))
-deGenes=as.data.frame(deGenes)
-rownames(deGenes)=c("SMBvsMPI","MTWvsMPI","SMBvsMTW")
-colnames(deGenes)=c("IC1","IC2","IC3","IC4","IC5")
-deGenes$type="deGenes"
-deGenes$Island=rownames(deGenes)
-allGenes=rbind(contributingGenes,deGenes)
-meltedGenes=melt(allGenes)
-# reorder
-meltedGenes$type=factor(meltedGenes$type, levels=c("deGenes","contribGenes"))
-
-pdf(paste0(outputdir,"ProportionSharedGenes_DEvsIC_LFC1.pdf"))
-ggplot(meltedGenes, aes(x = Island, y = value, fill = type)) + 
-  geom_bar(stat = 'identity', position = 'fill') + facet_grid(~ variable) + theme_bw() + 
-  theme(axis.title.x=element_blank(), axis.text.x = element_text(angle = 90)) +
-  scale_fill_manual(values = c("#4477AA","#EE6677"))
-dev.off()
-
-# We can see that at a LFC threshold of 1, there's now a much bigger overlap. Again, we see this more so in ICs 1-4, with IC1 reaching over 25% overlap between all population comparisons.
-
-# We can get the overlapping genes for each component for each population pair.
-
-for (dim in c(1:5)){
-  SMBvsMPI_IC_DE_Overlap <- SMBvsMPI[names(contrib[[dim]][which(names(contrib[[dim]]) %in% SMBvsMPI_genes)]),]
-  write.table(SMBvsMPI_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_SMBvsMPI_LFC1_IC",dim,".txt"))
-  MTWvsMPI_IC_DE_Overlap <- MTWvsMPI[names(contrib[[dim]][which(names(contrib[[dim]]) %in% MTWvsMPI_genes)]),]
-  write.table(MTWvsMPI_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_MTWvsMPI_LFC1_IC",dim,".txt"))
-  SMBvsMTW_IC_DE_Overlap <- SMBvsMTW[names(contrib[[dim]][which(names(contrib[[dim]]) %in% SMBvsMTW_genes)]),]
-  write.table(SMBvsMTW_IC_DE_Overlap, file=paste0(outputdir,"DE_IC_Overlap_SMBvsMTW_LFC1_IC",dim,".txt"))
-}
-
 
 #####################################
 # GO analysis of contributing genes #
@@ -372,65 +331,65 @@ for (dim in c(1:5)){
 
 # We've seen that there genes contributing to each independent component, and some of these genes overlap with DE genes. But what are they actually doing? IC analysis pulls out biological signals from the data, which corresponds to a component. Therefore, we can plug all of the contributing genes into a GO/KEGG analysis to see what pathways they're involved in. We'll do this using [GoSeq](https://genomebiology.biomedcentral.com/articles/10.1186/gb-2010-11-2-r14), which corrects for gene length bias. 
 
-# gene set testing with goSeq
-for(dim in 1:5){
-      # set up gene universe
-      gene.vector=as.integer(rownames(y) %in% names(contrib[[dim]]))
-      names(gene.vector)=rownames(y)
+# # gene set testing with goSeq
+# for(dim in 1:5){
+#       # set up gene universe
+#       gene.vector=as.integer(rownames(y) %in% names(contrib[[dim]]))
+#       names(gene.vector)=rownames(y)
 
-      # implement a weight for each gene dependent on its length
-      pwf=nullp(gene.vector,"hg19","ensGene",plot.fit=FALSE)
-      # use  the  default  method  to  calculate  the  over  and  under  expressed  GO categories among DE genes
-      GO.wall=goseq(pwf,"hg19","ensGene",use_genes_without_cat=TRUE)
+#       # implement a weight for each gene dependent on its length
+#       pwf=nullp(gene.vector,"hg19","ensGene",plot.fit=FALSE)
+#       # use  the  default  method  to  calculate  the  over  and  under  expressed  GO categories among DE genes
+#       GO.wall=goseq(pwf,"hg19","ensGene",use_genes_without_cat=TRUE)
 
-      # apply a multiple hypothesis testing correction set at 0.05% (BH method)
-      enriched.GO=GO.wall[p.adjust(GO.wall$over_represented_pvalue, method="BH")<=0.05,]
-      write.table(enriched.GO, file=paste0(outputdir,"EnrichedGOterms_ContributingGenes_LFC0.05_dim",dim,".txt"), quote=F, row.names=F)
+#       # apply a multiple hypothesis testing correction set at 0.05% (BH method)
+#       enriched.GO=GO.wall[p.adjust(GO.wall$over_represented_pvalue, method="BH")<=0.05,]
+#       write.table(enriched.GO, file=paste0(outputdir,"EnrichedGOterms_ContributingGenes_LFC0.05_dim",dim,".txt"), quote=F, row.names=F, sep="\t")
       
-      # plot
-      enriched_BP <- enriched.GO[which(enriched.GO$ontology=="BP"),c("term","over_represented_pvalue")]
-      enriched_BP$term <- factor(enriched_BP$term, levels=enriched_BP$term)
-      # if there are actually enriched GO terms, plot them
-      if (nrow(enriched_BP) > 0){
-      	pdf(paste0(outputdir,"EnrichedBP_Component",dim,".pdf"), width=12, height=10)
-      	print(ggplot(enriched_BP, aes(x=rev(term), y=-log10(over_represented_pvalue))) + 
-        	geom_point(stat='identity', aes(alpha=0.7), colour="#004488", size=5)  +
-        	coord_flip() + theme_bw() + ylab("-log10 BH-adjusted p-value") + xlab("GO Term") + 
-        	ggtitle(paste0("Enriched BP Go Terms, IC",dim)) + theme(legend.position = "none")) 
-      	dev.off()
-  }
-}
+#       # plot
+#       enriched_BP <- enriched.GO[which(enriched.GO$ontology=="BP"),c("term","over_represented_pvalue")]
+#       enriched_BP$term <- factor(enriched_BP$term, levels=enriched_BP$term)
+#       # if there are actually enriched GO terms, plot them
+#       if (nrow(enriched_BP) > 0){
+#       	pdf(paste0(outputdir,"EnrichedBP_Component",dim,".pdf"), width=12, height=10)
+#       	print(ggplot(enriched_BP, aes(x=rev(term), y=-log10(over_represented_pvalue))) + 
+#         	geom_point(stat='identity', aes(alpha=0.7), colour="#004488", size=5)  +
+#         	coord_flip() + theme_bw() + ylab("-log10 BH-adjusted p-value") + xlab("GO Term") + 
+#         	ggtitle(paste0("Enriched BP Go Terms, IC",dim)) + theme(legend.position = "none")) 
+#       	dev.off()
+#   }
+# }
 
 
-# Each plot is showing an enriched, biological process (BP) GO term on the y axis, along with its BH-adjusted, -log10 pvalue on the y axis. In IC1, we can see the immune response being kickstarted by activation of leokocytes/immune cells (myeloid cell activation involved in immune response, granulocyte activation, neutrophil activation, leukocyte activation involved in immune response, cell activation involved in immune response, etc.) In IC2, we can see immune-related processes, but this time in the context of cell activation, cell movement, and cell proliferation. In IC3, we see many biological porcesses involved in chemical reactions and pathways involving heme. Heme is an essential cofactor for aerobic organisms, and in blood stages, [malaria parasites consume most of the hemoglobin inside infected erythrocytes](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4263882/). In IC4, we see many viral pathways (defense response to virus, regulation of viral genome replication, positive regulation of defense response to virus by host), and finally in IC5, we have no enriched GO terms. 
+# # Each plot is showing an enriched, biological process (BP) GO term on the y axis, along with its BH-adjusted, -log10 pvalue on the y axis. In IC1, we can see the immune response being kickstarted by activation of leokocytes/immune cells (myeloid cell activation involved in immune response, granulocyte activation, neutrophil activation, leukocyte activation involved in immune response, cell activation involved in immune response, etc.) In IC2, we can see immune-related processes, but this time in the context of cell activation, cell movement, and cell proliferation. In IC3, we see many biological porcesses involved in chemical reactions and pathways involving heme. Heme is an essential cofactor for aerobic organisms, and in blood stages, [malaria parasites consume most of the hemoglobin inside infected erythrocytes](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4263882/). In IC4, we see many viral pathways (defense response to virus, regulation of viral genome replication, positive regulation of defense response to virus by host), and finally in IC5, we have no enriched GO terms. 
 
-# Now let's take a look at KEGG pathways.
+# # Now let's take a look at KEGG pathways.
 
-for(dim in 1:5){
-      gene.vector=as.integer(rownames(y) %in% names(contrib[[dim]]))
-      names(gene.vector)=rownames(y)
-      # KEGG pathway analysis
-      en2eg=as.list(org.Hs.egENSEMBL2EG)
-      # Get the mapping from Entrez 2 KEGG
-      eg2kegg=as.list(org.Hs.egPATH)
-      # Define a function which gets all unique KEGG IDs
-      # associated with a set of Entrez IDs
-      grepKEGG=function(id,mapkeys){unique(unlist(mapkeys[id],use.names=FALSE))}
-      # Apply this function to every entry in the mapping from ENSEMBL 2 Entrez to combine the two maps
-      kegg=lapply(en2eg,grepKEGG,eg2kegg)
-      # produce PWF as before
-      pwf=nullp(gene.vector,"hg19","ensGene", plot.fit=FALSE)
-      KEGG=goseq(pwf,gene2cat=kegg, use_genes_without_cat=TRUE)
-      enriched.GO.kegg=KEGG[p.adjust(KEGG$over_represented_pvalue, method="BH")<.05,]
-      if (nrow(enriched.GO.kegg) > 0){
-      	enriched.GO.kegg$category <- paste0("hsa",enriched.GO.kegg$category)
-        query <- keggGet(enriched.GO.kegg$category)
-        KEGG_Term <- lapply(1:length(enriched.GO.kegg$category), function(x) unname(query[[x]]$PATHWAY_MAP))
-        enriched.GO.kegg$Term <- unlist(KEGG_Term) 
-        print(enriched.GO.kegg$Term)
-      }
-      write.table(enriched.GO.kegg, file=paste0(outputdir,"EnrichedGOkegg_ContributingGenes_LFC0.05_dim",dim,".txt"))
-}
+# for(dim in 1:5){
+#       gene.vector=as.integer(rownames(y) %in% names(contrib[[dim]]))
+#       names(gene.vector)=rownames(y)
+#       # KEGG pathway analysis
+#       en2eg=as.list(org.Hs.egENSEMBL2EG)
+#       # Get the mapping from Entrez 2 KEGG
+#       eg2kegg=as.list(org.Hs.egPATH)
+#       # Define a function which gets all unique KEGG IDs
+#       # associated with a set of Entrez IDs
+#       grepKEGG=function(id,mapkeys){unique(unlist(mapkeys[id],use.names=FALSE))}
+#       # Apply this function to every entry in the mapping from ENSEMBL 2 Entrez to combine the two maps
+#       kegg=lapply(en2eg,grepKEGG,eg2kegg)
+#       # produce PWF as before
+#       pwf=nullp(gene.vector,"hg19","ensGene", plot.fit=FALSE)
+#       KEGG=goseq(pwf,gene2cat=kegg, use_genes_without_cat=TRUE)
+#       enriched.GO.kegg=KEGG[p.adjust(KEGG$over_represented_pvalue, method="BH")<.05,]
+#       if (nrow(enriched.GO.kegg) > 0){
+#       	enriched.GO.kegg$category <- paste0("hsa",enriched.GO.kegg$category)
+#         query <- keggGet(enriched.GO.kegg$category)
+#         KEGG_Term <- lapply(1:length(enriched.GO.kegg$category), function(x) unname(query[[x]]$PATHWAY_MAP))
+#         enriched.GO.kegg$Term <- unlist(KEGG_Term) 
+#         print(enriched.GO.kegg$Term)
+#       }
+#       write.table(enriched.GO.kegg, file=paste0(outputdir,"EnrichedGOkegg_ContributingGenes_LFC0.05_dim",dim,".txt"), quote=F, row.names=F, sep="\t")
+# }
 
 # In IC1, we have "Cell adhesion molecules" as an enriched pathway. According to [KEGG](https://www.genome.jp/dbget-bin/www_bget?pathway+hsa04514): "Cell adhesion molecules (CAMs) are (glyco)proteins expressed on the cell surface and play a critical role in a wide array of biologic processes that include hemostasis, the immune response, inflammation, embryogenesis, and development of neuronal tissue." Interestingly, this is super important for malaria: "Adhesion of erythrocytes infected with Plasmodium falciparum to human cells has a key role in the pathogenesis of life-threatening malaria", as per this paper: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2878476/. 
 # In IC2, we see "Neuroactive ligand-receptor interaction", "Arrhythmogenic right ventricular cardiomyopathy", "Hematopoietic cell lineage", "Cytokine-cytokine receptor interaction", "Tryptophan metabolism", "Hypertrophic cardiomyopathy", "Protein digestion and absorption", and "Dilated cardiomyopathy". So I see two signals here from the KEGG pathways: heart-related myopathies, and cytokine activation. I really don't know what the heart signals could be from but here's some more info on teh cytokine response from [KEGG](https://www.google.com/search?client=firefox-b-d&biw=1807&bih=985&sxsrf=ALeKk03PS9YmgukUQdXocb4hD2qskN_BTw%3A1603859984190&ei=EPaYX8mQC83az7sPzrSX8AU&q=heart+myopathies&oq=heart+myopathies&gs_lcp=CgZwc3ktYWIQAzIGCAAQBxAeMgQIABAeMgYIABAIEB4yBggAEAgQHjIGCAAQCBAeOgQIABBHUMVBWMJEYOlGaABwAngBgAHWAogB4gqSAQUyLTMuMpgBAKABAaoBB2d3cy13aXrIAQjAAQE&sclient=psy-ab&ved=0ahUKEwjJ2IGFvNbsAhVN7XMBHU7aBV4Q4dUDCAw&uact=5): "Cytokines are released by various cells in the body, usually in response to an activating stimulus, and they induce responses through binding to specific receptors on the cell surface of target cells." 
@@ -459,8 +418,8 @@ for (i in 1:5){
   colnames(IC)=c("Sample_Contribution","Island")
   pval=unname(resQual["Island",][i])
   pdf(paste0(outputdir,"IslandContribution_IC",i,".pdf"))
-  print(ggplot(IC, aes(x=Island,y=Sample_Contribution,fill=Island)) + geom_violin() + geom_boxplot(width=0.1) + labs(x = "Island", y = "Sample Contribution", subtitle=paste0("p = ",pval)) + theme_bw() + 
-  scale_fill_manual(values=c(MentawaiCol,SumbaCol,KorowaiCol)) +
+  print(ggplot(IC, aes(x=Island,y=Sample_Contribution,fill=Island)) + geom_violin(alpha=0.7) + geom_boxplot(width=0.1) + labs(x = "Island", y = "Sample Contribution") + theme_bw(base_size = 26) + 
+  scale_fill_manual(values=c(MentawaiCol,SumbaCol,KorowaiCol)) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) +
   ggtitle(paste0("Island Contributions in IC",i)))
   dev.off()
 }
@@ -553,7 +512,7 @@ dev.off()
 # Now let's look into Flavivirus.
 
 for (i in 1:5){
-  df=data.frame(A(icaSetIndo)[[i]], pData(icaSetIndo)[,"Viruses_unk_k_unk_p"], rownames(A(icaSetIndo)))
+  df=data.frame(A(icaSetIndo)[[i]], pData(icaSetIndo)[,"Viruses_unk_k_Kitrinoviricota"], rownames(A(icaSetIndo)))
   colnames(df)=c("sample_contribution","virus_load", "sample")
   df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
   pathogen="Flavivirus"
@@ -616,9 +575,27 @@ ICA_genes <- melt(ICA_genes)
 ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
 
 pdf(paste0(outputdir,"MARCO_VoomData.pdf"), height = 8, width = 8)
-ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw(base_size = 26) + 
-  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin(alpha=0.7) + theme_bw(base_size = 26) + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + ylim(-3, 10) + 
   geom_boxplot(width=0.1) + ylab("CPM") + ggtitle("MARCO") + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) 
+dev.off()
+
+# draw a regression line betwen expression levels of MARCO and plasmodium load. First, we need to select the 117 sample (no replicates included) from the ICA_genes df
+ICA_genes=ICA_genes[rownames(A(icaSetIndo)),]
+identical(rownames(ICA_genes), rownames(A(icaSetIndo)))
+# TRUE
+
+# make this into a table and plot
+df=data.frame(ICA_genes$value,pData(icaSetIndo)[,"Eukaryota_unk_k_Apicomplexa"],rownames(A(icaSetIndo)))
+colnames(df)=c("MARCO_log2CPM","plasmo_load", "sample")
+df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+pathogen="Apicomplexa"
+pdf(paste0(outputdir,"Plasmodium_MARCO_Correlation.pdf"), height = 8, width = 8)
+print(ggplot(df, aes(x=MARCO_log2CPM, y=plasmo_load)) + 
+geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "MARCO log2CPM", y = paste(pathogen, "Load", sep=" ")) +
+geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle("Plasmodium load vs MARCO expression") + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) + 
+scale_color_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +
+stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
 dev.off()
 
 # SLC4A1 -----------------------------------
@@ -627,9 +604,27 @@ ICA_genes <- melt(ICA_genes)
 ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
 
 pdf(paste0(outputdir,"SLC4A1_VoomData.pdf"), height = 8, width = 8)
-ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw(base_size = 26) + 
-  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin(alpha=0.7) + theme_bw(base_size = 26) + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + ylim(6, 14) +
   geom_boxplot(width=0.1) + ylab("CPM") + ggtitle("SLC4A1") + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) 
+dev.off()
+
+# draw a regression line betwen expression levels of MARCO and plasmodium load. First, we need to select the 117 sample (no replicates included) from the ICA_genes df
+ICA_genes=ICA_genes[rownames(A(icaSetIndo)),]
+identical(rownames(ICA_genes), rownames(A(icaSetIndo)))
+# TRUE
+
+# make this into a table and plot
+df=data.frame(ICA_genes$value,pData(icaSetIndo)[,"Eukaryota_unk_k_Apicomplexa"],rownames(A(icaSetIndo)))
+colnames(df)=c("SLC4A1_log2CPM","plasmo_load", "sample")
+df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+pathogen="Apicomplexa"
+pdf(paste0(outputdir,"Plasmodium_SLC4A1_Correlation.pdf"), height = 8, width = 8)
+print(ggplot(df, aes(x=SLC4A1_log2CPM, y=plasmo_load)) + 
+geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "SLC4A1 log2CPM", y = paste(pathogen, "Load", sep=" ")) +
+geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle("Plasmodium load vs SLC4A1 expression") + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) + 
+scale_color_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +
+stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
 dev.off()
 
 # RSAD2 -----------------------------------
@@ -638,9 +633,128 @@ ICA_genes <- melt(ICA_genes)
 ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
 
 pdf(paste0(outputdir,"RSAD2_Batch_VoomData.pdf"), height = 8, width = 8)
-ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin() + theme_bw(base_size = 26) + 
-  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +  
+ggplot(ICA_genes, aes(x=Island, y=value, fill=Island)) + geom_violin(alpha=0.7) + theme_bw(base_size = 26) + 
+  scale_fill_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) + ylim(4, 17) +
   geom_boxplot(width=0.1) + ylab("CPM") + ggtitle("RSAD2") + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) 
 dev.off()
+
+# draw a regression line betwen expression levels of MARCO and plasmodium load. First, we need to select the 117 sample (no replicates included) from the ICA_genes df
+ICA_genes=ICA_genes[rownames(A(icaSetIndo)),]
+identical(rownames(ICA_genes), rownames(A(icaSetIndo)))
+# TRUE
+
+# make this into a table and plot
+df=data.frame(ICA_genes$value,pData(icaSetIndo)[,"Viruses_unk_k_Kitrinoviricota"],rownames(A(icaSetIndo)))
+colnames(df)=c("RSAD2_log2CPM","plasmo_load", "sample")
+df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+pathogen="Kitrinoviricota"
+pdf(paste0(outputdir,"Plasmodium_RSAD2_Correlation.pdf"), height = 8, width = 8)
+print(ggplot(df, aes(x=RSAD2_log2CPM, y=plasmo_load)) + 
+geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "RSAD2 log2CPM", y = paste(pathogen, "Load", sep=" ")) +
+geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle("Plasmodium load vs RSAD2 expression") + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) + 
+scale_color_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +
+stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
+dev.off()
+
+# IC2 - CCL23 -----------------------------------
+ICA_genes = vDup$E[c("ENSG00000274736"),]
+ICA_genes <- melt(ICA_genes)
+ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+# draw a regression line betwen expression levels of CCL23 and plasmodium load. First, we need to select the 117 sample (no replicates included) from the ICA_genes df
+ICA_genes=ICA_genes[rownames(A(icaSetIndo)),]
+identical(rownames(ICA_genes), rownames(A(icaSetIndo)))
+# TRUE
+
+# make this into a table and plot
+df=data.frame(ICA_genes$value,pData(icaSetIndo)[,"Eukaryota_unk_k_Apicomplexa"],rownames(A(icaSetIndo)))
+colnames(df)=c("CCL23_log2CPM","plasmo_load", "sample")
+df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+pathogen="Apicomplexa"
+pdf(paste0(outputdir,"Plasmodium_CCL23_Correlation.pdf"), height = 8, width = 8)
+print(ggplot(df, aes(x=CCL23_log2CPM, y=plasmo_load)) + 
+geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "CCL23 log2CPM", y = paste(pathogen, "Load", sep=" ")) +
+geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle("Plasmodium load vs CCL23 expression") + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) + 
+scale_color_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +
+stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
+dev.off()
+
+# IC5 - UTS2 -----------------------------------
+ICA_genes = vDup$E[c("ENSG00000049247"),]
+ICA_genes <- melt(ICA_genes)
+ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+# draw a regression line betwen expression levels of CCL23 and plasmodium load. First, we need to select the 117 sample (no replicates included) from the ICA_genes df
+ICA_genes=ICA_genes[rownames(A(icaSetIndo)),]
+identical(rownames(ICA_genes), rownames(A(icaSetIndo)))
+# TRUE
+
+# make this into a table and plot
+df=data.frame(ICA_genes$value,pData(icaSetIndo)[,"Viruses_unk_k_Kitrinoviricota"],rownames(A(icaSetIndo)))
+colnames(df)=c("UTS2_log2CPM","plasmo_load", "sample")
+df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+pathogen="Kitrinoviricota"
+pdf(paste0(outputdir,"Plasmodium_UTS2_Correlation.pdf"), height = 8, width = 8)
+print(ggplot(df, aes(x=UTS2_log2CPM, y=plasmo_load)) + 
+geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "UTS2 log2CPM", y = paste(pathogen, "Load", sep=" ")) +
+geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle("Kitrinoviricota load vs UTS2 expression") + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) + 
+scale_color_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +
+stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
+dev.off()
+
+# # alternatively, remove replicates and plot plasmodium load versus log2 CPM of each gene
+# vDup$E <- vDup$E[,-which(colnames(vDup$E) %in% removeReplicates)]
+
+# # MARCO
+# ICA_genes = vDup$E[c("ENSG00000019169"),]
+# ICA_genes <- melt(ICA_genes)
+# ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+# df=data.frame(ICA_genes$value,pData(icaSetIndo)[,"Eukaryota_unk_k_Apicomplexa"],rownames(A(icaSetIndo)))
+# colnames(df)=c("CPM","plasmo_load", "sample")
+# df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+# pathogen="Apicomplexa"
+# pdf(paste0(outputdir,"PlasmodiumVsMarco.pdf"), height = 8, width = 8)
+# print(ggplot(df, aes(x=CPM, y=plasmo_load)) + 
+# geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "log2 CPM", y = paste(pathogen, "Load", sep=" ")) +
+# geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle("MARCO") + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) + 
+# scale_color_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +
+# stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
+# dev.off()
+
+# # SLC4A1 
+# ICA_genes = vDup$E[c("ENSG00000004939"),]
+# ICA_genes <- melt(ICA_genes)
+# ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+# df=data.frame(ICA_genes$value,pData(icaSetIndo)[,"Eukaryota_unk_k_Apicomplexa"],rownames(A(icaSetIndo)))
+# colnames(df)=c("CPM","plasmo_load", "sample")
+# df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+# pathogen="Apicomplexa"
+# pdf(paste0(outputdir,"PlasmodiumVsSLC4A1.pdf"), height = 8, width = 8)
+# print(ggplot(df, aes(x=CPM, y=plasmo_load)) + 
+# geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "log2 CPM", y = paste(pathogen, "Load", sep=" ")) +
+# geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle("SLC4A1") + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) + 
+# scale_color_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +
+# stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
+# dev.off()
+
+
+# # RSAD2 
+# ICA_genes = vDup$E[c("ENSG00000134321"),]
+# ICA_genes <- melt(ICA_genes)
+# ICA_genes$Island <- sapply(strsplit(rownames(ICA_genes), "[-.]"), `[`, 1)
+
+# df=data.frame(ICA_genes$value,pData(icaSetIndo)[,"Viruses_unk_k_Kitrinoviricota"],rownames(A(icaSetIndo)))
+# colnames(df)=c("CPM","plasmo_load", "sample")
+# df$Island <- sapply(strsplit(as.character(df$sample), "[-.]"), `[`, 1)
+# pathogen="Kitrinoviricota"
+# pdf(paste0(outputdir,"PlasmodiumVsRSAD2.pdf"), height = 8, width = 8)
+# print(ggplot(df, aes(x=CPM, y=plasmo_load)) + 
+# geom_point(aes(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))]), size = 4) + labs(x = "log2 CPM", y = paste(pathogen, "Load", sep=" ")) +
+# geom_smooth(method="lm", se = FALSE) + theme_bw(base_size = 26) + theme(legend.position = "bottom", legend.margin = margin(t = -15, r = 0, b = 0, l = -35, unit = "pt")) + ggtitle("RSAD2") + geom_rug(color = c(KorowaiCol,MentawaiCol,SumbaCol)[as.numeric(factor(Island))], size = 2) + 
+# scale_color_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol)) +
+# stat_cor(method = "pearson", cex=8) + scale_color_identity(name = "Island", guide = "legend", labels = c("Mentawai", "Sumba", "Korowai")))
+# dev.off()
 
 

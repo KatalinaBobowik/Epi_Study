@@ -36,6 +36,7 @@ library(DivNet)
 library(taxize)
 
 # set up directories
+inputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/ControlSampleComparison_TB/"
 refdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/ReferenceFiles/EpiStudy/"
 filteringDir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/ControlSampleComparison/"
 outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/ControlSampleComparison_TB/"
@@ -106,6 +107,8 @@ AllREadsSE_Indo_Counts_physeq=prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq
 # add sequencing depth information
 SeqDepth_Prefilter = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
 sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_Prefilter = SeqDepth_Prefilter
+
+save(AllREadsSE_Indo_Counts_physeq, file=paste0(outputdir,"AllREadsSE_Indo_Counts_physeq.Rda"))
 
 AllREadsSE_Indo_Counts_physeq
 
@@ -256,10 +259,26 @@ dev.off()
 # rarecurve_counts <- otu_table(Indonesian_subset)
 # col <- IndonesiaCol
 # pdf(paste0(outputdir,"rarefaction_IndoOnly.pdf"))
-# for (i in c(1,5)){
-#  	rarecurve_counts[rarecurve_counts<=i]<-0
-# 	rarecurve(t(otu_table(rarecurve_counts, taxa_are_rows = TRUE)), step=200, col=col,label=F, xlab="Counts",ylab="Number Species",main=paste("Removing Reads",i,"And Below \nIndonesian Samples",sep=" "),xlim=c(0,10000))
-# }
+# rarecurve_counts[rarecurve_counts<=1]<-0
+# rarecurve(t(otu_table(rarecurve_counts, taxa_are_rows = TRUE)), step=200, col=col,label=F, xlab="Counts",ylab="Number Species",main="Removing Reads 1 And Below \nIndonesian Samples",xlim=c(0,50000), ylim=c(0,400))
+# dev.off()
+
+# # Rarefaction curves for the Indonesian dataset only (since it is lower sequencing depth and hard to see)
+# Mali_subset <- prune_taxa(taxa_sums(Mali_subset) > 0, Mali_subset)
+# rarecurve_counts <- otu_table(Mali_subset)
+# col <- MaliCol
+# pdf(paste0(outputdir,"rarefaction_MaliOnly.pdf"))
+# rarecurve_counts[rarecurve_counts<=1]<-0
+# rarecurve(t(otu_table(rarecurve_counts, taxa_are_rows = TRUE)), step=200, col=col,label=F, xlab="Counts",ylab="Number Species",main="Removing Reads 1 And Below \nMalian Samples",xlim=c(0,50000), ylim=c(0,400))
+# dev.off()
+
+# # Rarefaction curves for the Indonesian dataset only (since it is lower sequencing depth and hard to see)
+# UK_subset <- prune_taxa(taxa_sums(UK_subset) > 0, UK_subset)
+# rarecurve_counts <- otu_table(UK_subset)
+# col <- UKCol
+# pdf(paste0(outputdir,"rarefaction_UKOnly.pdf"))
+# rarecurve_counts[rarecurve_counts<=1]<-0
+# rarecurve(t(otu_table(rarecurve_counts, taxa_are_rows = TRUE)), step=200, col=col,label=F, xlab="Counts",ylab="Number Species",main="Removing Reads 1 And Below \nUK Samples",xlim=c(0,50000), ylim=c(0,400))
 # dev.off()
 
 # Because our starting read depth is small, we will stick with removing singletons. We will also add the sequencing depth information to the phyloseq object to keep track of oir library size after filtering.
@@ -305,9 +324,6 @@ merged_phylo_counts <- prune_taxa(taxa_sums(merged_phylo_counts) > 0, merged_phy
 SeqDepth_noUnkSk = colSums(otu_table(merged_phylo_counts))
 sample_data(merged_phylo_counts)$SeqDepth_noUnkSk = SeqDepth_noUnkSk
 
-# save the data
-save(merged_phylo_counts, file=paste0(outputdir,"merged_phylo_counts.Rda"))
-
 ## Summarising the data -------------
 
 # Now that we've done all of the filtering, we can plot the final library sizes.
@@ -317,6 +333,14 @@ pdf(paste0(outputdir,"librarySizes.pdf"))
 ggplot(meta(merged_phylo_counts), aes(SampleName, SeqDepth_noUnkSk)) + geom_bar(stat = "identity", aes(fill = SamplePop)) +
 scale_fill_manual(values = c(IndonesiaCol,MaliCol,UKCol)) + rotate_x_text()
 dev.off()
+
+# We can see that in the Indonesian and Malian dataset, most of the reads are removed when removing Chordates, however for the UK dataset, most reads are removed when removing Metazoa. For the UK dataset, this is due to a high number of reads mapping to molluscs, as I discuss in my script 'RemovingViridiplantaeAndMetazoa.R'.
+
+# Finally, fill in taxa that CCMetagen couldn't identify with taxize
+# we will load in the file we obtained from running the script 'GetTaxa_Taxize_GlobalPops.R', ran on 29.01.2021
+load(paste0(inputdir,"taxize_query.Rda"))
+index=which(tax_table(merged_phylo_counts)[,"Phylum"]=="unk_p")
+tax_table(merged_phylo_counts)[index,"Phylum"]=taxize_query[,"phylum"]
 
 # We can see that the library sizes are highly uneven, with the Indonesian data having the lowest sampling depth (with the exception of a few samples) and the UK dataset having the highest library depth.
 # The final step us is to summarise the data and see how many reads we lost at each filtering step.
@@ -334,14 +358,8 @@ ggplot(melted_FilteringSummary, aes(x=variable, y=log(value), fill=SamplePop)) +
   geom_boxplot(color="black",width=0.2, alpha = 0.7) + facet_wrap(~ SamplePop, scales = "free")
 dev.off()
 
-# We can see that in the Indonesian and Malian dataset, most of the reads are removed when removing Chordates, however for the UK dataset, most reads are removed when removing Metazoa. For the UK dataset, this is due to a high number of reads mapping to molluscs, as I discuss in my script 'RemovingViridiplantaeAndMetazoa.R'.
-
-# Finally, fill in taxa that CCMetagen couldn't identify with taxize
-index=which(tax_table(merged_phylo_counts)[,"Phylum"]=="unk_p")
-specieslist <- c(unname(tax_table(merged_phylo_counts)[index,"Family"]))
-a=tax_name(query = c(specieslist), get = c("phylum"), db = "ncbi")
-a[is.na(a)]="unk_p"
-tax_table(merged_phylo_counts)[index,"Phylum"]=a[,"phylum"]
+# save the data
+save(merged_phylo_counts, file=paste0(outputdir,"merged_phylo_counts.Rda"))
 
 ################
 # Data summary #
@@ -417,9 +435,9 @@ pop_comparison <- merged_phylo_counts %>%
 
 pop_comparison
 
-# otu_table()   OTU Table:         [ 50 taxa and 183 samples ]
+# otu_table()   OTU Table:         [ 51 taxa and 183 samples ]
 # sample_data() Sample Data:       [ 183 samples by 9 sample variables ]
-# tax_table()   Taxonomy Table:    [ 50 taxa by 8 taxonomic ranks ]
+# tax_table()   Taxonomy Table:    [ 51 taxa by 8 taxonomic ranks ]
 
 # change taxa names to reflect Phylum level
 taxa_names(pop_comparison) <- paste(tax_table(pop_comparison)[,"Superkingdom"], tax_table(pop_comparison)[,"Kingdom"], tax_table(pop_comparison)[,"Phylum"], sep="_")
@@ -616,6 +634,9 @@ dev.off()
 # Differential abundance testing #
 ###################################
 
+# all the data below uses random sampling. Make sure to set the seed for reproducibility!
+set.seed(54321)
+
 # We're interested in testing whether the species composition between populations is significantly different. Visually, we saw that the populations look different, but we can't say that for sure. One way to test this is through differential abundance testing.
 # One of the best packages I've found so far to test this is called [Aldex2](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0067019) (ANOVA-Like Differential Expression). Aldex2 works by generatating a posterior probability (128 by default) for an observed instance of a taxon (adding a small prior to deal with zeros), then performing a centered log-ratio transformation on the data as a normalisation step (this deals with uneven library sizes). To identify differentially expressed genes, Aldex2 then performs a significance test using a Wilcoxon rank test, and finally, the probability of the taxon being differentially abundant is adjusted with FDR correction (by Benjamini–Hochberg). 
 # Aldex2 corrects for uneven library sizes, so rarefying is not necessary. The only input we need is the data with singletons removed.
@@ -651,6 +672,7 @@ aldex2_IndoVsUK <- left_join(aldex2_IndoVsUK, taxa_info)
 
 # save file
 write.table(sig_aldex2_IndoVsUK, file=paste0(outputdir,"sig_aldex2_IndoVsUK_phylum.txt"))
+write.table(aldex2_IndoVsUK, file=paste0(outputdir,"All_aldex2_IndoVsUK_phylum.txt"))
 
 # set significance colours
 aldex2_IndoVsUK$threshold <- aldex2_IndoVsUK$we.eBH <= 0.05
@@ -677,7 +699,7 @@ ggplot(aldex2_IndoVsUK) +
   geom_text_repel(aes(x = effect, y = -log10(we.eBH), label = ifelse(we.eBH <= 0.05, labels,""))) +
   ggtitle("UK Versus Indonesia") +
   xlab("Effect Size") + 
-  ylab("-log10 adjusted p-value") + theme_bw(base_size = 18) +
+  ylab("-log10 adjusted p-value") + theme_bw(base_size = 18) + xlim(c(-1,8)) + ylim(c(0,70)) +
   theme(legend.position = "bottom",
         plot.title = element_text(size = rel(1.5), hjust = 0.5),
         axis.title = element_text(size = rel(1.25)))
@@ -706,6 +728,7 @@ aldex2_IndoVsMali <- left_join(aldex2_IndoVsMali, taxa_info)
 
 # save file
 write.table(sig_aldex2_IndoVsMali, file=paste0(outputdir,"sig_aldex2_IndoVsMali_phylum.txt"))
+write.table(aldex2_IndoVsMali, file=paste0(outputdir,"All_aldex2_IndoVsMali_phylum.txt"))
 
 # set significance colours
 aldex2_IndoVsMali$threshold <- aldex2_IndoVsMali$we.eBH <= 0.05
@@ -725,13 +748,13 @@ for (name in as.character(aldex2_IndoVsMali$Phylum)){
 taxa_superkingdom = sapply(strsplit(tax_table(IndoVsMali)[,"Superkingdom"], "[_.]"), `[`, 1)
 
 # plot
-pdf(paste0(outputdir,"differentialAbundance_IndoVsMali_phylum_05threshold.pdf"), width=10)
+pdf(paste0(outputdir,"differentialAbundance_IndoVsMali_phylum_05threshold.pdf"))
 ggplot(aldex2_IndoVsMali) +
   geom_point(aes(x = effect, y = -log10(we.eBH)), color = ifelse(aldex2_IndoVsMali$we.eBH <= 0.05, c("#DDCC77","#023858","#800026","#78c679")[as.numeric(as.factor(taxa_superkingdom))],"black"), alpha = 0.65, size=8) +
   geom_text_repel(aes(x = effect, y = -log10(we.eBH), label = ifelse(we.eBH <= 0.05, labels,""))) +
   ggtitle("Mali Versus Indonesia") +
   xlab("Effect Size") + 
-  ylab("-log10 adjusted p-value") + theme_bw(base_size = 18) +
+  ylab("-log10 adjusted p-value") + theme_bw(base_size = 18) + xlim(c(-1,8)) + ylim(c(0,70)) +
   theme(legend.position = "none",
         plot.title = element_text(size = rel(1.5), hjust = 0.5),
         axis.title = element_text(size = rel(1.25)))
@@ -743,7 +766,7 @@ ggplot(aldex2_IndoVsMali) +
   geom_text_repel(aes(x = effect, y = -log10(we.eBH), label = ifelse(we.eBH <= 0.001, labels,""))) +
   ggtitle("Mali Versus Indonesia") +
   xlab("Effect Size") + 
-  ylab("-log10 adjusted p-value") + theme_bw(base_size = 18) +
+  ylab("-log10 adjusted p-value") + theme_bw(base_size = 18) + xlim(c(-1,8)) + ylim(c(0,70)) +
   theme(legend.position = "none",
         plot.title = element_text(size = rel(1.5), hjust = 0.5),
         axis.title = element_text(size = rel(1.25)))
@@ -785,6 +808,7 @@ aldex2_KorVsMali <- left_join(aldex2_KorVsMali, taxa_info)
 
 # save file
 write.table(sig_aldex2_KorVsMali, file=paste0(outputdir,"sig_aldex2_KorVsMali_phylum.txt"))
+write.table(aldex2_KorVsMali, file=paste0(outputdir,"All_aldex2_KorVsMali_phylum.txt"))
 
 # set significance colours
 aldex2_KorVsMali$threshold <- aldex2_KorVsMali$we.eBH <= 0.05
@@ -847,6 +871,7 @@ aldex2_KorVsUK <- left_join(aldex2_KorVsUK, taxa_info)
 
 # save file
 write.table(sig_aldex2_KorVsUK, file=paste0(outputdir,"sig_aldex2_KorVsUK_phylum.txt"))
+write.table(aldex2_KorVsUK, file=paste0(outputdir,"All_aldex2_KorVsUK_phylum.txt"))
 
 # set significance colours
 aldex2_KorVsUK$threshold <- aldex2_KorVsUK$we.eBH <= 0.05
@@ -1001,6 +1026,17 @@ ggplot(aldex2_IndoVsMali) +
         axis.title = element_text(size = rel(1.25)))
 dev.off()
 
+# # if you end up making an UpsetR plot:
+# library(UpSetR)
+
+# sig_aldex2_IndoVsUK_OTU = sig_aldex2_IndoVsUK$OTU
+# sig_aldex2_IndoVsMali_OTU = sig_aldex2_IndoVsMali$OTU
+# sig_aldex2_KorVsMali_OTU = sig_aldex2_KorVsMali$OTU
+# sig_aldex2_KorVsUK_OTU = sig_aldex2_KorVsUK$OTU
+
+# listInput <- list(IndoVsUK = sig_aldex2_IndoVsUK_OTU, IndoVsMali = sig_aldex2_IndoVsMali_OTU, KorVsMali = sig_aldex2_KorVsMali_OTU, KorVsUK = sig_aldex2_KorVsUK_OTU)
+# upset(fromList(listInput), order.by = "freq")
+
 
 ###################
 # Alpha diversity #
@@ -1019,6 +1055,11 @@ merged_phylo_counts_withSingletons <- subset_taxa(merged_phylo_counts_withSingle
 merged_phylo_counts_withSingletons <- subset_taxa(merged_phylo_counts_withSingletons, (Superkingdom!="unk_sk"))
 # remove any empty rows
 merged_phylo_counts_withSingletons <- prune_taxa(taxa_sums(merged_phylo_counts_withSingletons) > 0, merged_phylo_counts_withSingletons)
+
+# fill in taxa that CCMetagen couldn't identify with taxize
+load(paste0(inputdir,"taxize_query_singletons.Rda"))
+index=which(tax_table(merged_phylo_counts_withSingletons)[,"Phylum"]=="unk_p")
+tax_table(merged_phylo_counts_withSingletons)[index,"Phylum"]=taxize_query_singletons[,"phylum"]
 
 # Now that we have data without singletons, we now need to merge our data at a specified taxonomic level. DivNet is computationally expensive, and therefore a higher level is much, much faster.
 # We'll therefore test how our groups look like at the Phylum level. Then, we'll run DivNet without specifying any hypothesis testing.

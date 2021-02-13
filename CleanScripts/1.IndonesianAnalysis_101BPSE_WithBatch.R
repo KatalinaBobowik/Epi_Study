@@ -35,6 +35,7 @@ library(factoextra)
 library(taxize)
 
 # set up directories
+inputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/SEIndonesianSamples/"
 refdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/ReferenceFiles/EpiStudy/"
 filteringDir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/ControlSampleComparison/"
 outputdir = "/Users/katalinabobowik/Documents/UniMelb_PhD/Analysis/UniMelb_Sumba/Output/Epi_Study/SEIndonesianSamples/"
@@ -142,16 +143,16 @@ dev.off()
 # For the Indonesian dataset, the sequencing depth is variable and quite low in some samples. Therefore, pushing this threshold up too high will eliminate rare taxa, especially given that we didn't have a high library size to begin with.
 # Although our starting library size is small, let's explore the data a bit by looking at the effect of removing singletons.
 
-# Separate species' abundances and taxonomy columns
-rarecurve_counts <- otu_table(AllREadsSE_Indo_Counts_physeq)
-col <- c(rep(KorowaiCol,sum(sample_data(AllREadsSE_Indo_Counts_physeq)[,"SamplePop"]=="MPI")),rep(MentawaiCol,sum(sample_data(AllREadsSE_Indo_Counts_physeq)[,"SamplePop"]=="MTW")),rep(SumbaCol,sum(sample_data(AllREadsSE_Indo_Counts_physeq)[,"SamplePop"]=="SMB")))
-# Try with different filtering thresholds:
-pdf(paste0(outputdir,"rarefaction.pdf"))
-for (i in c(1,5)){
- 	rarecurve_counts[rarecurve_counts<=i]<-0
-	rarecurve(t(otu_table(rarecurve_counts, taxa_are_rows = TRUE)), step=200, col=col,label=F, xlab="Counts",ylab="Number Species",main=paste("Removing Reads",i,"And Below",sep=" "),xlim=c(0,50000))
-}
-dev.off()
+# # Separate species' abundances and taxonomy columns
+# rarecurve_counts <- otu_table(AllREadsSE_Indo_Counts_physeq)
+# col <- c(rep(KorowaiCol,sum(sample_data(AllREadsSE_Indo_Counts_physeq)[,"SamplePop"]=="MPI")),rep(MentawaiCol,sum(sample_data(AllREadsSE_Indo_Counts_physeq)[,"SamplePop"]=="MTW")),rep(SumbaCol,sum(sample_data(AllREadsSE_Indo_Counts_physeq)[,"SamplePop"]=="SMB")))
+# # Try with different filtering thresholds:
+# pdf(paste0(outputdir,"rarefaction.pdf"))
+# for (i in c(1,5)){
+#  	rarecurve_counts[rarecurve_counts<=i]<-0
+# 	rarecurve(t(otu_table(rarecurve_counts, taxa_are_rows = TRUE)), step=200, col=col,label=F, xlab="Counts",ylab="Number Species",main=paste("Removing Reads",i,"And Below",sep=" "),xlim=c(0,50000))
+# }
+# dev.off()
 
 # From the rarefaction curves, we can see that most samples qre starting to asymptote at or under 10,000 reads (however, it also looks like we need a higher sequencing depth, as there isn't a definitive asymptote, meaning we didn't capture everything). 
 # We can also see that when removing reads 5 and below (shown on the right hand side), the curve asymptotes much sooner. This is because you need more reads to detect rare species, and therefore removing reads 5 and below eliminates some of these rare species.
@@ -200,14 +201,6 @@ AllREadsSE_Indo_Counts_physeq <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_phy
 SeqDepth_noUnkSk = colSums(otu_table(AllREadsSE_Indo_Counts_physeq))
 sample_data(AllREadsSE_Indo_Counts_physeq)$SeqDepth_noUnkSk = SeqDepth_noUnkSk
 
-# save the data
-save(AllREadsSE_Indo_Counts_physeq, file=paste0(outputdir,"AllREadsSE_Indo_Counts_physeq_filtered.Rda"))
-
-# Also save the compositional data
-relative_phyloCounts_compositional <- microbiome::transform(AllREadsSE_Indo_Counts_physeq, "compositional")
-save(relative_phyloCounts_compositional, file=paste0(outputdir,"relative_phyloCounts_compositional_filtered.Rda"))
-relative_phyloCounts_clr <- microbiome::transform(AllREadsSE_Indo_Counts_physeq, "clr")
-save(relative_phyloCounts_clr, file=paste0(outputdir,"relative_phyloCounts_clr_filtered.Rda"))
 
 ## Summarising the data ---------------
 
@@ -218,6 +211,12 @@ pdf(paste0(outputdir,"librarySizes.pdf"))
 ggplot(meta(AllREadsSE_Indo_Counts_physeq), aes(SampleName, SeqDepth_noUnkSk)) + geom_bar(stat = "identity", aes(fill = SamplePop)) +
 scale_fill_manual(values = c(KorowaiCol,MentawaiCol,SumbaCol)) + rotate_x_text()
 dev.off()
+
+# Finally, fill in missing Phlya names using the package 'taxize'
+# we will load in the file we obtained from running the script 'GetTaxa_Taxize_IndonesianPops.R', ran on 29.01.2021
+load(paste0(inputdir,"taxize_query.Rda"))
+index=which(tax_table(AllREadsSE_Indo_Counts_physeq)[,"Phylum"]=="unk_p")
+tax_table(AllREadsSE_Indo_Counts_physeq)[index,"Phylum"]=taxize_query[,"phylum"]
 
 # We can see that the library sizes are highly uneven, with some samples having a  very high library depth (many in the Korowai), and many having a very low library depth. 
 # The final step us is to summarise the data and see how many reads we lost at each filtering step. We'll show this one the log scale since there is a large variance in depth between samples. 
@@ -237,12 +236,14 @@ dev.off()
 
 # We can see that most of the reads are removed when removing Chordates.
 
-# Finally, fill in missing Phlya names using the package 'taxize'
-index=which(tax_table(AllREadsSE_Indo_Counts_physeq)[,"Phylum"]=="unk_p")
-specieslist <- c(unname(tax_table(AllREadsSE_Indo_Counts_physeq)[index,"Family"]))
-a=tax_name(query = c(specieslist), get = c("phylum"), db = "ncbi")
-a[is.na(a)]="unk_p"
-tax_table(AllREadsSE_Indo_Counts_physeq)[index,"Phylum"]=a[,"phylum"]
+# save the data
+save(AllREadsSE_Indo_Counts_physeq, file=paste0(outputdir,"AllREadsSE_Indo_Counts_physeq_filtered.Rda"))
+
+# Also save the compositional data
+relative_phyloCounts_compositional <- microbiome::transform(AllREadsSE_Indo_Counts_physeq, "compositional")
+save(relative_phyloCounts_compositional, file=paste0(outputdir,"relative_phyloCounts_compositional_filtered.Rda"))
+relative_phyloCounts_clr <- microbiome::transform(AllREadsSE_Indo_Counts_physeq, "clr")
+save(relative_phyloCounts_clr, file=paste0(outputdir,"relative_phyloCounts_clr_filtered.Rda"))
 
 ################
 # Data summary #
@@ -265,8 +266,21 @@ data_summary_allPops_Family
 # sample_data() Sample Data:       [ 117 samples by 10 sample variables ]
 # tax_table()   Taxonomy Table:    [ 271 taxa by 8 taxonomic ranks ]
 
+# Find out the percentage of reads that are from Apicomplexa
+sum(otu_table(data_summary_allPops_Family)[grep("Plasmodiidae",tax_table(data_summary_allPops_Family)[,"Family"])])/sum(otu_table(data_summary_allPops_Family)[grep("Apicomplexa",tax_table(data_summary_allPops_Family)[,"Phylum"])])
+# [1] 0.999973
+
+# Find out the percentage of reads that are from Falviviridae
+sum(otu_table(data_summary_allPops_Family)[grep("Flaviviridae",tax_table(data_summary_allPops_Family)[,"Family"])])/sum(otu_table(data_summary_allPops_Family)[grep("Kitrinoviricota",tax_table(data_summary_allPops_Family)[,"Phylum"])])
+# [1] 1
+
 data_summary_allPops <- AllREadsSE_Indo_Counts_physeq %>%
   tax_glom("Phylum")
+
+data_summary_allPops
+# otu_table()   OTU Table:         [ 33 taxa and 117 samples ]
+# sample_data() Sample Data:       [ 117 samples by 10 sample variables ]
+# tax_table()   Taxonomy Table:    [ 33 taxa by 8 taxonomic ranks ]
 
 taxa_names(data_summary_allPops)=make.unique(paste(tax_table(data_summary_allPops)[,c("Superkingdom")], tax_table(data_summary_allPops)[,c("Phylum")], sep="_"))
 
@@ -345,7 +359,7 @@ dev.off()
 logged_phyla_counts_actinobacter = log10(colSums(otu_table(AllREadsSE_Indo_Counts_physeq)[grep("Actinobacteria",tax_table(AllREadsSE_Indo_Counts_physeq)[,"Phylum"])])+1)
 sample_data(merged_phylo_counts_zComposition)[["Actinobacteria"]] = logged_phyla_counts_actinobacter 
 zComposition.ord <- ordinate(merged_phylo_counts_zComposition, method = "PCoA", distance = "euclidean")
-pdf(paste0(outputdir,"PCA_Dimension1to5_CLRTransform_ByFlavivirusLoad.pdf"), width = 8)
+pdf(paste0(outputdir,"PCA_Dimension1to5_CLRTransform_ByActinobacterLoad.pdf"), width = 8)
 #plot_ordination(merged_phylo_counts_zComposition, zComposition.ord, color="Flavivirus", axes = 1:2, shape = "SamplePop") + geom_point(aes(), alpha=0.6, size=6) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#78c679","#006837"))(20), limits=c(1, 4))
 plot_ordination(merged_phylo_counts_zComposition, zComposition.ord, color="Actinobacteria", axes = 3:4, shape = "SamplePop") + geom_point(aes(), alpha=0.6, size=6) + theme(plot.title = element_text(hjust = 0, size = 16), axis.text=element_text(size=16), axis.title=element_text(size=17), legend.text = element_text(size=14), legend.title = element_text(size=16)) + scale_colour_gradientn(colours = colorRampPalette(c("lightblue","blue"))(5), limits=c(0.5, 3))
 plot_ordination(merged_phylo_counts_zComposition, zComposition.ord, color="Flavivirus", axes = 2:3, label="SampleName") + geom_point(aes(), alpha=0.6, size=4) + theme(plot.title = element_text(hjust = 0, size = 12)) + scale_colour_gradientn(colours = colorRampPalette(c("#78c679","#006837"))(20), limits=c(1, 4))
@@ -362,18 +376,17 @@ plot_ordination(merged_phylo_counts_zComposition, zComposition.ord, color="batch
 dev.off()
 
 # Perform ANOVA and get matrix of significance levels for all taxa
-all_taxa <- sapply(strsplit(rownames(tax_table(merged_phylo_counts_zComposition)), "[_.]"), `[`, 4)
-all_taxa <- all_taxa %>% gsub("unk", NA, .) %>% gsub("\\bp\\b", NA, .)
-all_taxa <- all_taxa[-which(is.na(all_taxa))]
+all_taxa <- rownames(tax_table(merged_phylo_counts_zComposition))
 zComposition.ord <- ordinate(merged_phylo_counts_zComposition, method = "PCoA", distance = "euclidean")
 taxa_matrix <- matrix(ncol=5, nrow=length(all_taxa))
 rownames(taxa_matrix) <- all_taxa
 for (i in 1:5){
   for (taxa in all_taxa){
-   logged_phyla_counts <- log10(colSums(otu_table(AllREadsSE_Indo_Counts_physeq)[grep(taxa,tax_table(AllREadsSE_Indo_Counts_physeq)[,"Phylum"])])+1)
-   taxa_matrix[taxa,i] <- anova(lm(zComposition.ord$vectors[,i] ~ logged_phyla_counts))[1,5]
+   logged_phyla_counts <- log10(otu_table(pop_comparison)[taxa,]+1)
+   taxa_matrix[taxa,i] <- anova(lm(zComposition.ord$vectors[,i] ~ matrix(logged_phyla_counts)))[1,5]
  }
 }
+
 write.table(taxa_matrix, file=paste0(outputdir,"ANOVA_taxa_matrix.txt"), sep="\t")
 
 # Finally, let's see how sample grouping looks like by another clustering method - hierarchical clustering by Euclidean distance. Again, this is done on the CLR-transformed data to correct for sequencing depth.
@@ -438,6 +451,7 @@ dev.off()
 
 # add a new column containing family names and superkingdom
 tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"] = paste(tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Family"], sep="_")
+# tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"] = paste(tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"], tax_table(AllREadsSE_Indo_Counts_physeq)[,"Phylum"], sep="_")
 tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"] <- gsub("Bacteria_$", "Bacteria_unclassified", tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"])
 tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"] <- gsub("Eukaryota_$", "Eukaryota_unclassified", tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"])
 tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"] <- gsub("Viruses_$", "Viruses_unclassified", tax_table(AllREadsSE_Indo_Counts_physeq)[,"Superkingdom"])
@@ -466,7 +480,13 @@ PaletteEukaryote = colorRampPalette(c("#4c0000","#b20000","#ff4c4c"))(4)
 PaletteOther = colorRampPalette(c("black"))(1)
 PaletteVirus = colorRampPalette(c("#78c679","#006837"))(2)
 
-Merged_Palette <- c(PaletteBacteria,PaletteEukaryote,PaletteOther,PaletteVirus)
+# PaletteArchaea = colorRampPalette(c("#DDCC77"))(1)
+# PaletteBacteria = colorRampPalette(c("#023858","#74a9cf"))(8)
+# PaletteEukaryote = colorRampPalette(c("#4c0000","#b20000","#ff4c4c"))(8)
+# PaletteOther = colorRampPalette(c("black"))(1)
+# PaletteVirus = colorRampPalette(c("#78c679","#006837"))(3)
+
+Merged_Palette <- c(PaletteBacteria, PaletteEukaryote, PaletteOther, PaletteVirus)
 
 pdf(paste0(outputdir,"relativeTaxa_Compositional.pdf"), width=15)
 phyloseq::plot_bar(relative_phyloCounts, fill = "Superkingdom") +
@@ -544,6 +564,10 @@ dev.off()
 # Differential abundance testing #
 ##################################
 
+
+# all the data below uses random sampling. Make sure to set the seed for reproducibility!
+set.seed(54321)
+
 # We're interested in testing whether the species composition between islands is significantly different. One way to test this is through differential abundance testing.
 # One of the best packages I've found so far to test this is called [Aldex2](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0067019) (ANOVA-Like Differential Expression). Aldex2 works by generatating a posterior probability (128 by default) for an observed instance of a taxon (adding a small prior to deal with zeros), then performing a centered log-ratio transformation on the data as a normalisation step (this deals with uneven library sizes). To identify differentially expressed genes, Aldex2 then performs a significance test using a Wilcoxon rank test, and finally, the probability of the taxon being differentially abundant is adjusted with FDR correction (by Benjamini–Hochberg). 
 # Aldex2 corrects for uneven library sizes, so rarefying is not necessary. The only input we need is the data with singletons removed.
@@ -565,6 +589,9 @@ sig_aldex2_MPIVsMTW <- aldex2_MPIVsMTW %>%
   filter(we.eBH < 0.05) %>%
   arrange(effect, we.eBH) %>%
   dplyr::select(OTU, diff.btw, diff.win, effect, we.ep, we.eBH)
+
+# write table
+write.table(sig_aldex2_MPIVsMTW, file=paste0(outputdir,"sig_aldex2_MPIVsMTW_phylum.txt"))
 
 labels = sapply(strsplit(rownames(aldex2_MPIVsMTW), "[..]"), `[`, 1) %>% gsub("unk_p","Uncharacterised",.)
 taxa_superkingdom = sapply(strsplit(tax_table(MPIVsMTW)[,"Superkingdom"], "[_.]"), `[`, 1) %>% gsub("unk","Uncharacterised",.)
@@ -595,6 +622,9 @@ sig_aldex2_MPIVsSMB <- aldex2_MPIVsSMB %>%
   arrange(effect, we.eBH) %>%
   dplyr::select(OTU, diff.btw, diff.win, effect, we.ep, we.eBH)
 
+# write table
+write.table(sig_aldex2_MPIVsSMB, file=paste0(outputdir,"sig_aldex2_MPIVsSMB_phylum.txt"))
+
 labels = sapply(strsplit(rownames(aldex2_MPIVsSMB), "[..]"), `[`, 1) %>% gsub("unk_p","Uncharacterised",.)
 taxa_superkingdom = sapply(strsplit(tax_table(MPIVsSMB)[,"Superkingdom"], "[_.]"), `[`, 1) %>% gsub("unk","Uncharacterised",.)
 
@@ -623,6 +653,9 @@ sig_aldex2_MTWVsSMB <- aldex2_MTWVsSMB %>%
   filter(we.eBH < 0.05) %>%
   arrange(effect, we.eBH) %>%
   dplyr::select(OTU, diff.btw, diff.win, effect, we.ep, we.eBH)
+
+# write table
+write.table(sig_aldex2_MTWVsSMB, file=paste0(outputdir,"sig_aldex2_MTWVsSMB_phylum.txt"))
 
 labels = sapply(strsplit(rownames(aldex2_MTWVsSMB), "[..]"), `[`, 1) %>% gsub("unk_p","Uncharacterised",.)
 taxa_superkingdom = sapply(strsplit(tax_table(MTWVsSMB)[,"Superkingdom"], "[_.]"), `[`, 1) %>% gsub("unk","Uncharacterised",.)
@@ -704,6 +737,11 @@ AllREadsSE_Indo_Counts_physeq_withSingletons <- subset_taxa(AllREadsSE_Indo_Coun
 # remove any empty rows
 AllREadsSE_Indo_Counts_physeq_withSingletons <- prune_taxa(taxa_sums(AllREadsSE_Indo_Counts_physeq_withSingletons) > 0, AllREadsSE_Indo_Counts_physeq_withSingletons)
 
+# we will load in the file we obtained from running the script 'GetTaxa_Taxize_IndonesianPops.R', ran on 29.01.2021
+load(paste0(inputdir,"taxize_query_singletons.Rda"))
+index=which(tax_table(AllREadsSE_Indo_Counts_physeq_withSingletons)[,"Phylum"]=="unk_p")
+tax_table(AllREadsSE_Indo_Counts_physeq_withSingletons)[index,"Phylum"]=taxize_query_singletons[,"phylum"]
+
 # Now that we have data without singletons, we now need to merge our data at a specified taxonomic level. DivNet is computationally expensive, and therefore a higher level is much, much faster.
 # We'll therefore test how our groups look like at the Phylum level. Then, we'll run DivNet without specifying any hypothesis testing.
 
@@ -728,6 +766,20 @@ summary_df_shannon <- as.data.frame(dv_pop_comparison$shannon %>%
   add_column("SampleNames" = pop_comparison %>% otu_table %>% sample_names) %>%
   add_column("SamplePop" =  pop_comparison %>% sample_data %>% .[,"SamplePop"] %>% as.matrix(.) %>% .[,1] %>% unname(.)))
 
+# save table
+write.table(summary_df_shannon, file=paste0(outputdir,"summary_df_shannon.txt"))
+
+# shannon diversity mean estimates
+KOR_shannon = mean(summary_df_shannon[which(summary_df_shannon$SamplePop == "MPI"),"estimate"])
+KOR_shannon
+# [1] 0.9223114
+MTW_shannon = mean(summary_df_shannon[which(summary_df_shannon$SamplePop == "MTW"),"estimate"])
+MTW_shannon
+# [1] 1.150193
+SMB_shannon = mean(summary_df_shannon[which(summary_df_shannon$SamplePop == "SMB"),"estimate"])
+SMB_shannon
+# [1] 1.184169
+
 pdf(paste0(outputdir,"shannonDiversity_DivNet_noHypothesisTesting.pdf"))
 ggplot(summary_df_shannon, aes(y = estimate, x = SamplePop, fill = SamplePop)) + geom_violin(alpha=0.7) + 
   geom_jitter(height = 0, width = .2) + geom_boxplot(width=0.08, outlier.color = NA) +
@@ -742,12 +794,45 @@ pdf(paste0(outputdir,"shannonDiversity_DivNet_noHypothesisTesting_bySample.pdf")
 plot(dv_pop_comparison$shannon, pop_comparison, col = "SamplePop") + scale_colour_manual(values=c(KorowaiCol,MentawaiCol,SumbaCol))
 dev.off()
 
+# let's check the distribution of the three populations to see if they differ
+kruskal.test(estimate ~ SamplePop, data = summary_df_shannon)
+# Kruskal-Wallis chi-squared = 2.9866, df = 2, p-value = 0.2246
+# the distributions are NOT statistically significant
+
+# Finally, let's plot plasmodium load on y axis versus shannon diversity indec on x axis
+# first, assign taxa names to the pop_comparison phylum object
+taxa_names(pop_comparison) <- paste(tax_table(pop_comparison)[,"Superkingdom"], tax_table(pop_comparison)[,"Kingdom"], tax_table(pop_comparison)[,"Phylum"], sep="_")
+# get plasmodium abundance
+plasmo_abundance = otu_table(pop_comparison)["Eukaryota_unk_k_Apicomplexa",]
+flavivirus_abundance = otu_table(pop_comparison)["Viruses_unk_k_Kitrinoviricota",]
+# check if the samplenames of the plasmodium abundance and shannon diversity obejects are the same
+identical(colnames(plasmo_abundance), summary_df_shannon$SampleNames)
+# [1] TRUE
+# They are! Now append the plasmodium abundance to the diversity estimate
+summary_df_shannon$PlasmoAbundance = as.vector(unname(plasmo_abundance))
+summary_df_shannon$FlavivirusAbundance = as.vector(unname(flavivirus_abundance))
+# order df by lowest to highest diversity
+summary_df_shannon = summary_df_shannon[order(summary_df_shannon$estimate),]
+
+# Just get Korowai individuals
+summary_df_shannon_Korowai = summary_df_shannon[which(summary_df_shannon$SamplePop == "MPI"),]
+summary_df_shannon_Korowai$SampleNames = factor(summary_df_shannon_Korowai$SampleNames, levels = summary_df_shannon_Korowai$SampleNames)
+
+pdf(paste0(outputdir,"Barplot_KorowaiDiversity_Versus_PlasmodiumAbundance.pdf"))
+ggplot(summary_df_shannon_Korowai, aes(x=SampleNames, y=PlasmoAbundance)) + geom_bar(stat="identity", fill="#b20000", alpha=0.6) +
+	theme(axis.text.x = element_text(angle=45, vjust = 0.5)) + scale_x_discrete(labels=round(summary_df_shannon_Korowai$estimate,2)) +
+	xlab("Shannon Diversity") + ylab("Plasmodium Abundance") + ggtitle("Korowai diversity versus Plasmodium abundance")
+dev.off()
+
 # Now let's see how the population diversity looks like when we use the Simpson diversity index. The Simpson diversity index is a similarity index where the higher the value, the lower the diversity. It measures the probability that two individuals randomly selected from a sample will belong to the same species. With this index, 0 represents infinite diversity and 1, no diversity.
 
 summary_df_simpson <- as.data.frame(dv_pop_comparison$simpson %>%
   summary %>%
   add_column("SampleNames" = pop_comparison %>% otu_table %>% sample_names) %>%
   add_column("SamplePop" =  pop_comparison %>% sample_data %>% .[,"SamplePop"] %>% as.matrix(.) %>% .[,1] %>% unname(.)))
+
+# save table
+write.table(summary_df_simpson, file=paste0(outputdir,"summary_df_simpson.txt"))
 
 pdf(paste0(outputdir,"simpsonDiversity_DivNet_noHypothesisTesting.pdf"))
 ggplot(summary_df_simpson, aes(y = estimate, x = SamplePop, fill = SamplePop)) + geom_violin(alpha=0.7) + 
@@ -770,6 +855,17 @@ dev.off()
 # Subtract the Simpson estimate from one
 summary_df_simpson$estimate = 1-summary_df_simpson$estimate
 # Plot
+
+# simpson diversity mean estimates
+KOR_simpson = mean(summary_df_simpson[which(summary_df_simpson$SamplePop == "MPI"),"estimate"])
+KOR_simpson
+MTW_simpson = mean(summary_df_simpson[which(summary_df_simpson$SamplePop == "MTW"),"estimate"])
+MTW_simpson
+SMB_simpson = mean(summary_df_simpson[which(summary_df_simpson$SamplePop == "SMB"),"estimate"])
+SMB_simpson
+
+# save table
+write.table(summary_df_simpson, file=paste0(outputdir,"summary_inverse_df_simpson.txt"))
 
 pdf(paste0(outputdir,"InverseSimpsonDiversity_DivNet_noHypothesisTesting.pdf"))
 ggplot(summary_df_simpson, aes(y = estimate, x = SamplePop, fill = SamplePop)) + geom_violin(alpha=0.7) + 
